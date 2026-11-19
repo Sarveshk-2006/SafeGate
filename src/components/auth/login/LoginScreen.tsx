@@ -31,6 +31,11 @@ import {
   DEMO_PASSWORD,
   type DemoAccount,
 } from '../../../mockData/auth/demoAccounts';
+import {
+  findProvisionedAccount,
+  getProvisionedAccounts,
+  mapProvisionedToProfile,
+} from '../../../services/provisionedAccountsStore';
 import '../auth.css';
 
 export const LoginScreen: React.FC = () => {
@@ -111,6 +116,15 @@ export const LoginScreen: React.FC = () => {
         return;
       }
 
+      // Check dynamically provisioned accounts (Added in real-time by Secretary / Admin)
+      const provisioned = findProvisionedAccount(normalizedEmail, password.trim());
+      if (provisioned) {
+        loginWithProfile(provisioned.profile, 'dwellora-provisioned-session-token');
+        setLoading(false);
+        navigate(provisioned.route, { replace: true });
+        return;
+      }
+
       // Offline / standalone demo credentials fallback
       const demoAccount = findDemoAccount(normalizedEmail, password.trim());
       if (demoAccount) {
@@ -123,7 +137,16 @@ export const LoginScreen: React.FC = () => {
       setError('Invalid email or password. Please verify your credentials.');
       setLoading(false);
     } catch (err: any) {
-      // If network fails (e.g. mobile APK offline or unreachable backend), check demo credentials
+      // If network fails (e.g. mobile APK offline or unreachable backend), check provisioned accounts first
+      const provisioned = findProvisionedAccount(normalizedEmail, password.trim());
+      if (provisioned) {
+        loginWithProfile(provisioned.profile, 'dwellora-provisioned-session-token');
+        setLoading(false);
+        navigate(provisioned.route, { replace: true });
+        return;
+      }
+
+      // Check demo credentials
       const demoAccount = findDemoAccount(normalizedEmail, password.trim());
       if (demoAccount) {
         loginWithProfile(demoAccount.profile, 'dwellora-demo-session-token');
@@ -629,6 +652,128 @@ export const LoginScreen: React.FC = () => {
                   Password: {DEMO_PASSWORD}
                 </span>
               </div>
+
+              {/* Dynamically Provisioned Accounts (Created by Secretary / Admin in real-time) */}
+              {getProvisionedAccounts().length > 0 && (
+                <div style={{ marginBottom: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <div
+                    style={{
+                      fontSize: '0.6875rem',
+                      fontWeight: 800,
+                      color: '#F06543',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                      marginTop: '0.25rem',
+                    }}
+                  >
+                    ✨ Real-Time Provisioned Accounts ({getProvisionedAccounts().length})
+                  </div>
+                  {getProvisionedAccounts().map((prov) => (
+                    <div
+                      key={prov.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '0.625rem 0.75rem',
+                        background: '#FFF8F6',
+                        border: '1.5px solid #FDC5B8',
+                        borderRadius: '12px',
+                        gap: '0.5rem',
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: '0.78125rem',
+                            fontWeight: 800,
+                            color: '#083B56',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {prov.name} ({prov.flatDetails || prov.role.toUpperCase()})
+                        </div>
+                        <div
+                          style={{
+                            fontSize: '0.6875rem',
+                            color: '#657785',
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {prov.email} · Pass: <strong style={{ color: '#083B56' }}>{prov.password}</strong>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '0.35rem', flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEmail(prov.email);
+                            setPassword(prov.password);
+                            setError(null);
+                            setDemoSelectedNotice(`Filled credentials for ${prov.name}.`);
+                          }}
+                          style={{
+                            background: '#ffffff',
+                            border: '1px solid #CBD5E1',
+                            color: '#083B56',
+                            padding: '0.3rem 0.6rem',
+                            borderRadius: '8px',
+                            fontSize: '0.6875rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Fill
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const { profile, route } = mapProvisionedToProfile(prov);
+                            loginWithProfile(profile, 'dwellora-provisioned-session-token');
+                            navigate(route, { replace: true });
+                          }}
+                          style={{
+                            background: '#F06543',
+                            border: 'none',
+                            color: '#ffffff',
+                            padding: '0.3rem 0.6rem',
+                            borderRadius: '8px',
+                            fontSize: '0.6875rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Log In
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  <div
+                    style={{
+                      height: '1px',
+                      background: '#E2E8F0',
+                      margin: '0.4rem 0',
+                    }}
+                  />
+                  <div
+                    style={{
+                      fontSize: '0.6875rem',
+                      fontWeight: 800,
+                      color: '#657785',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    Canonical Testing Accounts (7 Roles)
+                  </div>
+                </div>
+              )}
 
               {DEMO_ACCOUNTS.map((acc) => (
                 <div
