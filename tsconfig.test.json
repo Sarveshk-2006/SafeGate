@@ -8,5 +8,5 @@
     "types": ["node", "jest"],
     "skipLibCheck": true
   },
-  "include": ["tests/**/*"]
+  "include": ["tests/**/*", "src/**/*"]
 }

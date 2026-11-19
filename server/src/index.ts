@@ -26,6 +26,8 @@ import { WalletService } from './services/walletService.js';
 import { FederationMarketplaceService } from './services/federationMarketplaceService.js';
 import { AIGovernancePolicyEngine } from './aiGovernance.js';
 import { childSafetyRouter } from './childSafety/router.js';
+import { invitationService } from './services/invitationService.js';
+import { passwordResetService } from './services/passwordResetService.js';
 import {
   authenticateToken,
   authenticateFirebaseToken,
@@ -2540,6 +2542,254 @@ app.post('/api/auth/login', loginRateLimiter(10, 60000), async (req: Request, re
   } catch (error: any) {
     const sanitized = sanitizeErrorMessage(error, 'Login failed');
     res.status(500).json({ error: sanitized });
+  }
+});
+
+// ==========================================
+// ⭐ PHASE 4.8: INVITATION & ACCOUNT ACTIVATION
+// ==========================================
+
+// 1. Verify Invitation Token
+app.get('/api/auth/invitation/verify', async (req: Request, res: Response) => {
+  try {
+    const token = String(req.query.token || '');
+    const result = await invitationService.verifyInvitationToken(token);
+    if (!result.valid) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: sanitizeErrorMessage(error, 'Token verification failed') });
+  }
+});
+
+// 2. Accept Invitation & Set Initial Password
+app.post('/api/auth/invitation/accept', loginRateLimiter(10, 60000), async (req: Request, res: Response) => {
+  try {
+    const { token, password, name } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' });
+    }
+    const result = await invitationService.acceptInvitation({ rawToken: token, password, name });
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Failed to activate account' });
+  }
+});
+
+// 3. Request Password Reset Link
+app.post('/api/auth/password-reset/request', loginRateLimiter(10, 60000), async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    const result = await passwordResetService.requestPasswordReset(email);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: sanitizeErrorMessage(error, 'Password reset request failed') });
+  }
+});
+
+// 4. Verify Password Reset Token
+app.get('/api/auth/password-reset/verify', async (req: Request, res: Response) => {
+  try {
+    const token = String(req.query.token || '');
+    const result = await passwordResetService.verifyResetToken(token);
+    if (!result.valid) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: sanitizeErrorMessage(error, 'Reset verification failed') });
+  }
+});
+
+// 5. Confirm Password Reset
+app.post('/api/auth/password-reset/confirm', loginRateLimiter(10, 60000), async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: 'Token and new password are required' });
+    }
+    const result = await passwordResetService.resetPassword(token, newPassword);
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Password reset failed' });
+  }
+});
+
+// Secretary Resident Invitation Management Routes
+app.get('/api/secretary/residents/:residentId/invitation-status', authenticateToken, requireRole(['secretary', 'admin']), async (req: Request, res: Response) => {
+  try {
+    const residentId = String(req.params.residentId);
+    const societyId = req.authContext?.societyId;
+    const resident = await prisma.resident.findFirst({
+      where: { id: residentId },
+      include: { user: true },
+    });
+    if (!resident || (req.authContext?.role !== 'admin' && resident.societyId !== societyId)) {
+      return res.status(404).json({ error: 'Resident not found' });
+    }
+
+    const linkedUser = (resident as any).user;
+    // Check if active user account is already linked
+    if (linkedUser && linkedUser.status === 'ACTIVE' && linkedUser.passwordHash) {
+      return res.json({
+        status: 'ACTIVATED',
+        email: linkedUser.email,
+        activatedAt: linkedUser.updatedAt,
+      });
+    }
+
+    // Find latest invitation
+    const latestInvite = await prisma.invitation.findFirst({
+      where: {
+        societyId: resident.societyId,
+        OR: [{ residentId }, ...(resident.email ? [{ email: resident.email.toLowerCase().trim() }] : [])],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!latestInvite) {
+      return res.json({
+        status: 'NOT_INVITED',
+        email: resident.email,
+      });
+    }
+
+    let status = latestInvite.status;
+    if (status === 'PENDING' && new Date() > latestInvite.expiresAt) {
+      status = 'EXPIRED';
+    }
+
+    res.json({
+      status,
+      invitationId: latestInvite.id,
+      email: latestInvite.email,
+      deliveryStatus: latestInvite.deliveryStatus,
+      sentAt: latestInvite.sentAt,
+      expiresAt: latestInvite.expiresAt,
+      resendCount: latestInvite.resendCount,
+      lastResentAt: latestInvite.lastResentAt,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: sanitizeErrorMessage(error, 'Failed to fetch invitation status') });
+  }
+});
+
+app.post('/api/secretary/residents/:residentId/invite', authenticateToken, requireRole(['secretary', 'admin']), async (req: Request, res: Response) => {
+  try {
+    const residentId = String(req.params.residentId);
+    const societyId = req.authContext?.societyId || req.body.societyId;
+    const resident = await prisma.resident.findFirst({
+      where: { id: residentId },
+    });
+    if (!resident || (req.authContext?.role !== 'admin' && resident.societyId !== societyId)) {
+      return res.status(404).json({ error: 'Resident not found in your authorized society scope' });
+    }
+
+    const email = (req.body.email || resident.email || '').trim();
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ error: 'Valid resident email address is required to dispatch an invitation.' });
+    }
+
+    // Update resident email if changed
+    if (email !== resident.email) {
+      await prisma.resident.update({
+        where: { id: residentId },
+        data: { email },
+      });
+    }
+
+    const result = await invitationService.createInvitation({
+      societyId: resident.societyId,
+      email,
+      role: 'resident',
+      residentId: resident.id,
+      flatId: resident.flatId,
+      actorId: req.authContext?.userId || 'secretary',
+      actorRole: req.authContext?.role || 'secretary',
+    });
+
+    res.json({
+      success: true,
+      message: `Invitation dispatched to ${email}`,
+      invitationId: result.invitation.id,
+      deliveryStatus: result.delivery.success ? 'SENT' : 'FAILED',
+      expiresAt: result.invitation.expiresAt,
+    });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Failed to dispatch invitation' });
+  }
+});
+
+app.post('/api/secretary/residents/:residentId/resend-invite', authenticateToken, requireRole(['secretary', 'admin']), async (req: Request, res: Response) => {
+  try {
+    const residentId = String(req.params.residentId);
+    const societyId = req.authContext?.societyId;
+    const resident = await prisma.resident.findFirst({ where: { id: residentId } });
+    if (!resident || (req.authContext?.role !== 'admin' && resident.societyId !== societyId)) {
+      return res.status(404).json({ error: 'Resident not found' });
+    }
+
+    const latestInvite = await prisma.invitation.findFirst({
+      where: {
+        societyId: resident.societyId,
+        OR: [{ residentId }, ...(resident.email ? [{ email: resident.email.toLowerCase().trim() }] : [])],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!latestInvite) {
+      return res.status(400).json({ error: 'No previous invitation found to resend. Please send a new invitation.' });
+    }
+
+    const result = await invitationService.resendInvitation(
+      latestInvite.id,
+      req.authContext?.userId || 'secretary',
+      req.authContext?.role || 'secretary'
+    );
+
+    res.json({
+      success: true,
+      message: `Invitation resent to ${latestInvite.email}`,
+      invitationId: result.invitation.id,
+      resendCount: result.invitation.resendCount,
+      expiresAt: result.invitation.expiresAt,
+    });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Failed to resend invitation' });
+  }
+});
+
+app.post('/api/secretary/residents/:residentId/revoke-invite', authenticateToken, requireRole(['secretary', 'admin']), async (req: Request, res: Response) => {
+  try {
+    const residentId = String(req.params.residentId);
+    const societyId = req.authContext?.societyId;
+    const resident = await prisma.resident.findFirst({ where: { id: residentId } });
+    if (!resident || (req.authContext?.role !== 'admin' && resident.societyId !== societyId)) {
+      return res.status(404).json({ error: 'Resident not found' });
+    }
+
+    const latestInvite = await prisma.invitation.findFirst({
+      where: {
+        societyId: resident.societyId,
+        status: 'PENDING',
+        OR: [{ residentId }, ...(resident.email ? [{ email: resident.email.toLowerCase().trim() }] : [])],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!latestInvite) {
+      return res.status(400).json({ error: 'No pending invitation found to revoke.' });
+    }
+
+    await invitationService.revokeInvitation(latestInvite.id, req.authContext?.role || 'secretary');
+
+    res.json({
+      success: true,
+      message: 'Invitation has been revoked.',
+    });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Failed to revoke invitation' });
   }
 });
 

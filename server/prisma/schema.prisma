@@ -209,6 +209,7 @@ model Society {
   childGatePasses     ChildGatePass[]
   childExitLogs       ChildExitLog[]
   childSafetyAlerts   ChildSafetyAlert[]
+  invitations         Invitation[]
 
   @@map("societies")
 }
@@ -254,6 +255,7 @@ model Flat {
   visitorPasses    VisitorPass[]
   parcels          Parcel[]
   childProfiles    ChildProfile[]
+  invitations      Invitation[]
 
   @@unique([towerId, flatNumber])
   @@unique([societyId, id], map: "uq_flats_society_id")
@@ -299,6 +301,7 @@ model User {
   reportedChildAlerts      ChildSafetyAlert[]      @relation("ChildAlertReportedBy")
   acknowledgedChildAlerts  ChildSafetyAlert[]      @relation("ChildAlertAcknowledgedBy")
   resolvedChildAlerts      ChildSafetyAlert[]      @relation("ChildAlertResolvedBy")
+  passwordResetTokens      PasswordResetToken[]
 
   @@map("users")
 }
@@ -331,6 +334,7 @@ model Resident {
   maintenanceTickets    MaintenanceTicket[]
   payments              Payment[]
   childProfiles         ChildProfile[]
+  invitations           Invitation[]
 
   @@unique([societyId, id], map: "uq_residents_society_id")
   @@map("residents")
@@ -1258,4 +1262,50 @@ model ChildSafetyAlert {
   @@index([childId], map: "idx_child_alerts_child")
   @@index([societyId, createdAt], map: "idx_child_alerts_society_time")
   @@map("child_safety_alerts")
+}
+
+model Invitation {
+  id             String    @id @default(uuid())
+  societyId      String    @map("society_id")
+  email          String
+  role           UserRole  @default(resident)
+  residentId     String?   @map("resident_id")
+  flatId         String?   @map("flat_id")
+  tokenHash      String    @unique @map("token_hash")
+  status         String    @default("PENDING")
+  deliveryStatus String    @default("QUEUED") @map("delivery_status")
+  deliveryError  String?   @map("delivery_error")
+  expiresAt      DateTime  @map("expires_at")
+  createdBy      String    @map("created_by")
+  sentAt         DateTime? @map("sent_at")
+  acceptedAt     DateTime? @map("accepted_at")
+  revokedAt      DateTime? @map("revoked_at")
+  resendCount    Int       @default(0) @map("resend_count")
+  lastResentAt   DateTime? @map("last_resent_at")
+  metadata       Json?     @default("{}")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  society        Society   @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  resident       Resident? @relation(fields: [residentId], references: [id], onDelete: SetNull)
+  flat           Flat?     @relation(fields: [flatId], references: [id], onDelete: SetNull)
+
+  @@index([societyId, email], map: "idx_invitations_society_email")
+  @@index([residentId], map: "idx_invitations_resident_id")
+  @@map("invitations")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  email     String
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_password_reset_tokens_user_id")
+  @@map("password_reset_tokens")
 }

@@ -6,14 +6,14 @@ const DRAWER_NAV = [
   { label: 'Home Dashboard', path: '/domestic', icon: Home },
   { label: 'Today\'s Schedule', path: '/domestic', icon: CalendarDays },
   { label: 'Gate QR Pass', path: '/domestic', icon: QrCode },
-  { label: 'Profile', path: '/domestic', icon: User },
+  { label: 'Profile', path: '/domestic/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [
   { label: 'Home', path: '/domestic', icon: Home },
   { label: 'Schedule', path: '/domestic', icon: CalendarDays },
   { label: 'QR Pass', path: '/domestic', icon: QrCode },
-  { label: 'Profile', path: '/domestic', icon: User },
+  { label: 'Profile', path: '/domestic/profile', icon: User },
 ];
 
 export const DomesticWorkerLayout = () => {

@@ -47,3 +47,5 @@ android/captures/
 # Logs
 logs/
 *.log
+.vercel
+.env*

@@ -3,6 +3,9 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { trackActiveRoute, getRestoredOrRoleDefaultRoute } from '../utils/sessionRouteTracker';
 import { LoginPage } from '../pages/auth/LoginPage';
 import { OnboardingPage } from '../pages/auth/OnboardingPage';
+import { AccountActivationPage } from '../pages/auth/AccountActivationPage';
+import { ForgotPasswordPage } from '../pages/auth/ForgotPasswordPage';
+import { ResetPasswordPage } from '../pages/auth/ResetPasswordPage';
 import { UnauthorizedPage } from '../pages/unauthorized/UnauthorizedPage';
 import { ResidentDashboard } from '../pages/dashboard/ResidentDashboard';
 import { GuardDashboard } from '../pages/dashboard/GuardDashboard';
@@ -17,13 +20,18 @@ import { VendorManagementPage } from '../pages/dashboard/admin/VendorManagementP
 import { AuditLogsPage } from '../pages/dashboard/admin/AuditLogsPage';
 import { ParkingManagementPage } from '../pages/dashboard/admin/ParkingManagementPage';
 import { AdminHomePage } from '../pages/dashboard/admin/AdminHomePage';
+import { AdminProfilePage } from '../pages/dashboard/admin/AdminProfilePage';
 import { MyFlatPage } from '../pages/dashboard/resident/MyFlatPage';
 import { VisitorPassHubPage } from '../pages/dashboard/resident/VisitorPassHubPage';
 import { ResidentParkingPage } from '../pages/dashboard/resident/ResidentParkingPage';
 import { ResidentProfilePage } from '../pages/dashboard/resident/ResidentProfilePage';
 import { ResidentServicesPage } from '../pages/dashboard/resident/ResidentServicesPage';
 import { ResidentActivityPage } from '../pages/dashboard/resident/ResidentActivityPage';
+import { SecurityHomePage } from '../pages/dashboard/security/SecurityHomePage';
 import { SecurityTerminalPage } from '../pages/dashboard/security/SecurityTerminalPage';
+import { SecurityProfilePage } from '../pages/dashboard/security/SecurityProfilePage';
+import { CommitteeProfilePage } from '../pages/dashboard/committee/CommitteeProfilePage';
+import { SuperAdminProfilePage } from '../pages/dashboard/SuperAdminProfilePage';
 import { ParkingGateScannerPage } from '../pages/dashboard/security/ParkingGateScannerPage';
 import { DomesticWorkerManagementPage } from '../pages/dashboard/admin/DomesticWorkerManagementPage';
 import { DomesticHelpHubPage } from '../pages/dashboard/resident/DomesticHelpHubPage';
@@ -71,6 +79,7 @@ import { FacilityAMCContractsPage } from '../pages/dashboard/facility/FacilityAM
 import { FacilityCleaningOpsPage } from '../pages/dashboard/facility/FacilityCleaningOpsPage';
 import { FacilityUtilitiesPage } from '../pages/dashboard/facility/FacilityUtilitiesPage';
 import { DomesticWorkerDashboard } from '../pages/dashboard/DomesticWorkerDashboard';
+import { StaffProfilePage } from '../pages/dashboard/staff/StaffProfilePage';
 import { UnifiedRequestCenter } from '../domains/requests/components/UnifiedRequestCenter';
 import { AdminAdvertisementsPage } from '../pages/dashboard/admin/AdminAdvertisementsPage';
 import { AdminNGOManagementPage } from '../pages/dashboard/admin/AdminNGOManagementPage';
@@ -141,13 +150,16 @@ export const AppRoutes: React.FC = () => {
       {/* Public Routes */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/onboarding" element={<OnboardingPage />} />
+      <Route path="/activate" element={<AccountActivationPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/unauthorized" element={<UnauthorizedPage />} />
 
       {/* Root Redirection */}
       <Route
         path="/"
         element={
-          status === 'AUTHENTICATED' ? <Navigate to={getDefaultRoute()} replace /> : <Navigate to="/login" replace />
+          status === 'AUTHENTICATED' ? <Navigate to={getDefaultRoute()} replace /> : <OnboardingPage />
         }
       />
 
@@ -216,7 +228,7 @@ export const AppRoutes: React.FC = () => {
           <Route path="/admin/advertisements" element={<AdminAdvertisementsPage />} />
           <Route path="/admin/operations" element={<RealtimeOperationsHubPage />} />
           <Route path="/admin/community" element={<ResidentCommunityHubPage />} />
-          <Route path="/admin/profile" element={<AdminHomePage />} />
+          <Route path="/admin/profile" element={<AdminProfilePage />} />
           <Route path="/admin/*" element={<AdminHomePage />} />
         </Route>
       </Route>
@@ -231,14 +243,14 @@ export const AppRoutes: React.FC = () => {
       {/* -- Security Guard Routes -- */}
       <Route element={<ProtectedRoute allowedRoles={['guard', 'secretary', 'admin']} />}>
         <Route element={<SecurityLayout />}>
-          <Route path="/security" element={<SecurityTerminalPage />} />
+          <Route path="/security" element={<SecurityHomePage />} />
           <Route path="/security/terminal" element={<SecurityTerminalPage />} />
           <Route path="/security/gate" element={<SecurityTerminalPage />} />
           <Route path="/security/verify" element={<GuardDashboard />} />
           <Route path="/guard" element={<GuardDashboard />} />
           <Route path="/guard/*" element={<GuardDashboard />} />
           <Route path="/security/activity" element={<SecurityTerminalPage />} />
-          <Route path="/security/profile" element={<SecurityTerminalPage />} />
+          <Route path="/security/profile" element={<SecurityProfilePage />} />
           <Route path="/security/parking" element={<ParkingGateScannerPage />} />
           <Route path="/security/staff-scanner" element={<StaffGateTerminalPage />} />
           <Route path="/security/delivery-intelligence" element={<DeliveryIntelligencePage />} />
@@ -246,7 +258,7 @@ export const AppRoutes: React.FC = () => {
           <Route path="/security/emergency-command" element={<SecurityEmergencyTerminalPage />} />
           <Route path="/security/privacy-hub" element={<SecurityTerminalPage />} />
           <Route path="/security/guest-stay" element={<GuestStayScannerPage />} />
-          <Route path="/security/*" element={<SecurityTerminalPage />} />
+          <Route path="/security/*" element={<SecurityHomePage />} />
         </Route>
       </Route>
 
@@ -255,6 +267,8 @@ export const AppRoutes: React.FC = () => {
         <Route element={<SuperAdminLayout />}>
           <Route path="/super-admin" element={<SuperAdminDashboard />} />
           <Route path="/super-admin/societies" element={<SuperAdminSocietiesPage />} />
+          <Route path="/super-admin/users" element={<ResidentManagementPage />} />
+          <Route path="/super-admin/profile" element={<SuperAdminProfilePage />} />
           <Route path="/super-admin/*" element={<SuperAdminDashboard />} />
         </Route>
       </Route>
@@ -275,6 +289,7 @@ export const AppRoutes: React.FC = () => {
         <Route element={<ServiceProviderLayout />}>
           <Route path="/service-provider" element={<ServiceProviderDashboard />} />
           <Route path="/service-provider/tasks" element={<ServiceProviderTaskPage />} />
+          <Route path="/service-provider/profile" element={<StaffProfilePage staffType="SERVICE_PROVIDER" />} />
           <Route path="/service-provider/*" element={<ServiceProviderDashboard />} />
         </Route>
       </Route>
@@ -290,7 +305,7 @@ export const AppRoutes: React.FC = () => {
           <Route path="/committee/governance" element={<CommitteeDashboard />} />
           <Route path="/committee/vendors" element={<VendorManagementPage />} />
           <Route path="/committee/reports" element={<CommitteeDashboard />} />
-          <Route path="/committee/profile" element={<CommitteeDashboard />} />
+          <Route path="/committee/profile" element={<CommitteeProfilePage />} />
           <Route path="/committee/*" element={<CommitteeDashboard />} />
         </Route>
       </Route>
@@ -314,6 +329,7 @@ export const AppRoutes: React.FC = () => {
       <Route element={<ProtectedRoute allowedRoles={['vendor', 'resident', 'secretary', 'admin']} />}>
         <Route element={<DomesticWorkerLayout />}>
           <Route path="/domestic" element={<DomesticWorkerDashboard />} />
+          <Route path="/domestic/profile" element={<StaffProfilePage staffType="DOMESTIC_WORKER" />} />
           <Route path="/domestic/*" element={<DomesticWorkerDashboard />} />
         </Route>
       </Route>

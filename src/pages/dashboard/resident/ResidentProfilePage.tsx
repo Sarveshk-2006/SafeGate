@@ -21,7 +21,7 @@ interface LockerDocument {
 }
 
 export const ResidentProfilePage: React.FC = () => {
-  const { currentUser, logout } = useAuth();
+  const { currentUser, logout, updateCurrentUser } = useAuth();
   const navigate = useNavigate();
 
   // Avatar state
@@ -74,6 +74,7 @@ export const ResidentProfilePage: React.FC = () => {
   const handleAvatarUpload = (url: string) => {
     setAvatarUrl(url);
     localStorage.setItem('aarizo_resident_avatar', url);
+    updateCurrentUser({ avatarUrl: url });
     setIsEditingAvatar(false);
   };
 

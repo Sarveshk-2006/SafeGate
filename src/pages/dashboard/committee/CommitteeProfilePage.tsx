@@ -23,7 +23,7 @@ import {
 import { FileUploader } from '../../../components/common/FileUploader';
 
 export const CommitteeProfilePage: React.FC = () => {
-  const { currentUser, logout } = useAuth();
+  const { currentUser, logout, updateCurrentUser } = useAuth();
   const navigate = useNavigate();
 
   // Local state for editable user details with fallback
@@ -73,6 +73,7 @@ export const CommitteeProfilePage: React.FC = () => {
   const handleAvatarUpload = (url: string) => {
     setAvatarUrl(url);
     localStorage.setItem('aarizo_committee_avatar', url);
+    updateCurrentUser({ avatarUrl: url });
     setIsEditingAvatar(false);
   };
 
@@ -81,20 +82,12 @@ export const CommitteeProfilePage: React.FC = () => {
     setSaveStatus('SAVING');
     setTimeout(() => {
       setProfileData(editForm);
-      try {
-        const existing = localStorage.getItem('aarizo_user');
-        const userObj = existing ? JSON.parse(existing) : {};
-        const updated = {
-          ...userObj,
-          name: editForm.name,
-          phone: editForm.phone,
-          email: editForm.email,
-          flatDetails: editForm.flatDetails,
-        };
-        localStorage.setItem('aarizo_user', JSON.stringify(updated));
-      } catch (e) {
-        console.warn('Could not save profile to localStorage:', e);
-      }
+      updateCurrentUser({
+        name: editForm.name,
+        phone: editForm.phone,
+        email: editForm.email,
+        flatDetails: editForm.flatDetails,
+      });
       setSaveStatus('SUCCESS');
       setTimeout(() => {
         setSaveStatus('IDLE');

@@ -45,6 +45,7 @@ const DRAWER_NAV = [
   { label: 'Security & Audit', path: '/admin/security-audit', icon: Lock },
   { label: 'Live Operations', path: '/admin/realtime', icon: Radio },
   { label: 'Notifications', path: '/notifications', icon: Bell },
+  { label: 'Secretary Profile', path: '/admin/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [

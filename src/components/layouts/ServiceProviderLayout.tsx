@@ -6,14 +6,14 @@ const DRAWER_NAV = [
   { label: 'Dashboard', path: '/service-provider', icon: HardHat },
   { label: 'Tasks', path: '/service-provider/tasks', icon: CheckSquare },
   { label: 'Gate QR Pass', path: '/service-provider', icon: QrCode },
-  { label: 'Profile', path: '/service-provider', icon: User },
+  { label: 'Profile', path: '/service-provider/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [
   { label: 'Home', path: '/service-provider', icon: HardHat },
   { label: 'Tasks', path: '/service-provider/tasks', icon: CheckSquare },
   { label: 'QR Pass', path: '/service-provider', icon: QrCode },
-  { label: 'Profile', path: '/service-provider', icon: User },
+  { label: 'Profile', path: '/service-provider/profile', icon: User },
 ];
 
 export const ServiceProviderLayout = () => {

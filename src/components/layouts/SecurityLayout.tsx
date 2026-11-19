@@ -23,6 +23,7 @@ const DRAWER_NAV = [
   { label: 'Emergency Command', path: '/security/emergency-command', icon: ShieldAlert },
   { label: 'Guest Stays', path: '/security/guest-stay', icon: BedDouble },
   { label: 'Privacy & Audit', path: '/security/privacy-hub', icon: ShieldCheck },
+  { label: 'Guard Profile', path: '/security/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [

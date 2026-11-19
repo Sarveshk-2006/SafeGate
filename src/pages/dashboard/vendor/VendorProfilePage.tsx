@@ -23,7 +23,7 @@ import { vendorRepository } from '../../../repositories/vendors';
 import type { VendorProfile } from '../../../domains/vendors/types';
 
 export const VendorProfilePage: React.FC = () => {
-  const { currentUser, logout } = useAuth();
+  const { currentUser, logout, updateCurrentUser } = useAuth();
   const navigate = useNavigate();
 
   const vendorUid = currentUser?.uid || currentUser?.id || 'user-vendor-01';
@@ -119,6 +119,11 @@ export const VendorProfilePage: React.FC = () => {
       }
 
       setProfileForm(editForm);
+      updateCurrentUser({
+        name: editForm.companyName,
+        phone: editForm.phone,
+        email: editForm.email,
+      });
       setSaveSuccess('Business profile updated successfully!');
       setTimeout(() => {
         setSaveSuccess(null);

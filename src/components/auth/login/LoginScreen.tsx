@@ -1,24 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
 import { isNativeApp, registerGlobalBackHandler } from '../../../utils/nativeMobile';
 import { App } from '@capacitor/app';
 import {
   ArrowRight,
   AlertCircle,
-  ShieldCheck,
-  Home,
-  Building2,
-  UserCheck,
-  Wrench,
-  Store,
-  KeyRound,
   Eye,
   EyeOff,
   Lock,
   Loader2,
-  Smartphone,
   Mail,
+  KeyRound,
+  ChevronDown,
+  Sparkles,
 } from 'lucide-react';
 import { MOCK_USERS } from '../../../mockData/auth/mockUsers';
 import { apiClient } from '../../../services/apiClient';
@@ -27,22 +22,19 @@ import '../auth.css';
 
 export const LoginScreen: React.FC = () => {
   const navigate = useNavigate();
-  const {
-    phoneNumber,
-    setPhoneNumber,
-    verifyOtp,
-    loginAsRole,
-    loginWithProfile,
-    error,
-    setError,
-  } = useAuth();
+  const { loginWithProfile, error, setError } = useAuth();
 
-  const [password, setPassword] = useState<string>('dwellora@2026');
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [otpInput, setOtpInput] = useState<string>('');
-  const [showOtpModal, setShowOtpModal] = useState<boolean>(false);
-  const [loading, setLoading] = useState(false);
-  const [activeRole, setActiveRole] = useState<UserRole>('resident');
+  const [loading, setLoading] = useState<boolean>(false);
+
+  // Development Only: Test Persona Quick-Fill Collapsible (strictly hidden in production)
+  const isDevEnvironment = Boolean(
+    typeof (globalThis as any).process !== 'undefined' &&
+    (globalThis as any).process?.env?.NODE_ENV === 'development'
+  );
+  const [showDevPersonas, setShowDevPersonas] = useState<boolean>(false);
 
   // Prevent back navigation on Android when on Login screen -> Exit App safely
   useEffect(() => {
@@ -55,110 +47,73 @@ export const LoginScreen: React.FC = () => {
     }
   }, []);
 
-  const executeLogin = (role: UserRole) => {
-    if (loading) return;
-    setLoading(true);
-    setError(null);
-
-    setTimeout(() => {
-      loginAsRole(role);
-      setLoading(false);
-
-      if (role === 'secretary') navigate('/admin', { replace: true });
-      else if (role === 'guard') navigate('/security', { replace: true });
-      else if (role === 'committee') navigate('/committee', { replace: true });
-      else if (role === 'facility_manager') navigate('/facility', { replace: true });
-      else if (role === 'vendor') navigate('/vendor', { replace: true });
-      else if (role === 'admin') navigate('/super-admin', { replace: true });
-      else navigate('/resident', { replace: true });
-    }, 450);
-  };
-
-  const handleRoleSelect = (role: UserRole) => {
-    setActiveRole(role);
-    setPhoneNumber(MOCK_USERS[role]?.phone || '9876543210');
-    setError(null);
-  };
-
-  const handleRoleCardClick = (role: UserRole) => {
-    handleRoleSelect(role);
-  };
-
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const identifier = phoneNumber.trim();
-    if (!identifier) {
-      setError('Please enter a valid mobile number or email.');
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setError('Please enter a valid email address.');
       return;
     }
 
-    // Real Authentication: If email is entered, authenticate with PostgreSQL backend using stored salt & hash
-    if (identifier.includes('@')) {
-      if (!password.trim()) {
-        setError('Please enter your account password.');
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await apiClient.loginWithPassword({
-          email: identifier,
-          password: password.trim(),
-        });
-        if (res && res.success && res.user) {
-          const userRole = (res.user.role || 'resident').toLowerCase() as UserRole;
-          const userProfile: UserProfile = {
-            id: res.user.id,
-            uid: res.user.id,
-            name: res.user.name,
-            email: res.user.email,
-            phone: res.user.phone,
-            role: userRole,
-            societyId: res.user.societyId || 'soc-gvs',
-            societyName: res.user.societyName || 'Green Valley Society',
-            flatNumber: res.user.flatNumber,
-            status: 'ACTIVE',
-            avatarUrl: `https://images.unsplash.com/photo-1534528741775?auto=format&fit=crop&w=250&q=80`,
-          };
-          loginWithProfile(userProfile, res.token);
-          setLoading(false);
-
-          if (userRole === 'secretary') navigate('/admin', { replace: true });
-          else if (userRole === 'guard') navigate('/security', { replace: true });
-          else if (userRole === 'committee') navigate('/committee', { replace: true });
-          else if (userRole === 'facility_manager') navigate('/facility', { replace: true });
-          else if (userRole === 'vendor') navigate('/vendor', { replace: true });
-          else if (userRole === 'admin') navigate('/super-admin', { replace: true });
-          else navigate('/resident', { replace: true });
-          return;
-        }
-      } catch (err: any) {
-        setError(err?.message || 'Invalid email or password. Please verify credentials.');
-        setLoading(false);
-        return;
-      }
+    if (!password.trim()) {
+      setError('Please enter your account password.');
+      return;
     }
 
-    // Role demo flow when mobile number is provided
-    executeLogin(activeRole);
-  };
-
-  const handleOtpVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
     setLoading(true);
+    setError(null);
+
     try {
-      if (otpInput === '4092' || otpInput === '1234' || otpInput.length >= 4) {
-        setShowOtpModal(false);
-        executeLogin(activeRole);
+      const res = await apiClient.loginWithPassword({
+        email: normalizedEmail,
+        password: password.trim(),
+      });
+
+      if (res && res.success && res.user) {
+        const userRole = (res.user.role || 'resident').toLowerCase() as UserRole;
+        const userProfile: UserProfile = {
+          id: res.user.id,
+          uid: res.user.id,
+          name: res.user.name,
+          email: res.user.email,
+          phone: res.user.phone,
+          role: userRole,
+          societyId: res.user.societyId || 'soc-gvs',
+          societyName: res.user.societyName || 'Green Valley Society',
+          flatNumber: res.user.flatNumber,
+          status: 'ACTIVE',
+          avatarUrl: `https://images.unsplash.com/photo-1534528741775?auto=format&fit=crop&w=250&q=80`,
+        };
+
+        loginWithProfile(userProfile, res.token);
+        setLoading(false);
+
+        if (userRole === 'secretary') navigate('/admin', { replace: true });
+        else if (userRole === 'guard') navigate('/security', { replace: true });
+        else if (userRole === 'committee') navigate('/committee', { replace: true });
+        else if (userRole === 'facility_manager') navigate('/facility', { replace: true });
+        else if (userRole === 'vendor') navigate('/vendor', { replace: true });
+        else if (userRole === 'admin') navigate('/super-admin', { replace: true });
+        else navigate('/resident', { replace: true });
         return;
       }
-      await verifyOtp(otpInput);
-      executeLogin(activeRole);
-    } catch {
-      setShowOtpModal(false);
-      executeLogin(activeRole);
-    } finally {
+
+      setError('Invalid email or password. Please verify your credentials.');
       setLoading(false);
+    } catch (err: any) {
+      setError(err?.message || 'Invalid email or password. Please verify credentials.');
+      setLoading(false);
+    }
+  };
+
+  // Development quick-fill helper for test personas
+  const handleQuickFill = (role: UserRole) => {
+    const mockUser = MOCK_USERS[role];
+    if (mockUser && mockUser.email) {
+      setEmail(mockUser.email);
+      setPassword('dwellora@2026');
+      setError(null);
     }
   };
 
@@ -179,8 +134,6 @@ export const LoginScreen: React.FC = () => {
         overflowX: 'hidden',
       }}
     >
-      <div id="recaptcha-container" />
-
       {/* Main Form Container */}
       <div
         style={{
@@ -279,168 +232,7 @@ export const LoginScreen: React.FC = () => {
           </div>
         )}
 
-        {/* ── Role Selection Card ── */}
-        <div
-          style={{
-            width: '100%',
-            background: '#ffffff',
-            border: '1px solid #E5E9EC',
-            borderRadius: '20px',
-            padding: '1.25rem',
-            boxShadow: '0 8px 28px rgba(8, 59, 86, 0.06)',
-            marginBottom: '1.25rem',
-            boxSizing: 'border-box',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: '0.75rem',
-            }}
-          >
-            <span
-              style={{
-                fontSize: '0.6875rem',
-                fontWeight: 800,
-                textTransform: 'uppercase',
-                letterSpacing: '0.06em',
-                color: '#657785',
-              }}
-            >
-              Portal Role
-            </span>
-            <span
-              style={{
-                fontSize: '0.75rem',
-                fontWeight: 800,
-                color: '#F06543',
-                background: '#FFF0EC',
-                padding: '0.2rem 0.6rem',
-                borderRadius: '8px',
-                border: '1px solid #FDE3DC',
-              }}
-            >
-              {MOCK_USERS[activeRole]?.roleLabel || activeRole}
-            </span>
-          </div>
-
-          {/* Primary 3 Roles */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gap: '0.5rem',
-              marginBottom: '0.5rem',
-            }}
-          >
-            {[
-              { role: 'resident' as UserRole, label: 'Resident', icon: Home, desc: 'Home Portal' },
-              { role: 'secretary' as UserRole, label: 'Secretary', icon: Building2, desc: 'Admin Ops' },
-              { role: 'guard' as UserRole, label: 'Guard', icon: ShieldCheck, desc: 'Gate Control' },
-            ].map((item) => {
-              const isSelected = activeRole === item.role;
-              return (
-                <button
-                  type="button"
-                  key={item.role}
-                  onClick={() => handleRoleCardClick(item.role)}
-                  style={{
-                    background: isSelected ? '#FFF0EC' : '#F8FAFC',
-                    border: isSelected ? '1.5px solid #F06543' : '1px solid #E2E8F0',
-                    borderRadius: '14px',
-                    padding: '0.625rem 0.35rem',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    textAlign: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    boxShadow: isSelected ? '0 4px 12px rgba(240, 101, 67, 0.15)' : 'none',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: '10px',
-                      background: isSelected ? '#F06543' : '#EAF6FC',
-                      color: isSelected ? '#ffffff' : '#083B56',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      marginBottom: '0.35rem',
-                      transition: 'all 0.2s ease',
-                    }}
-                  >
-                    <item.icon size={16} />
-                  </div>
-                  <span
-                    style={{
-                      fontSize: '0.78125rem',
-                      fontWeight: 800,
-                      color: isSelected ? '#F06543' : '#083B56',
-                      lineHeight: 1.1,
-                    }}
-                  >
-                    {item.label}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: '0.625rem',
-                      fontWeight: 600,
-                      color: '#657785',
-                      marginTop: '0.15rem',
-                    }}
-                  >
-                    {item.desc}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Secondary Roles Bar */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.4rem' }}>
-            {[
-              { role: 'admin' as UserRole, label: 'Admin', icon: KeyRound },
-              { role: 'committee' as UserRole, label: 'Committee', icon: UserCheck },
-              { role: 'facility_manager' as UserRole, label: 'Facility', icon: Wrench },
-              { role: 'vendor' as UserRole, label: 'Vendor', icon: Store },
-            ].map((item) => {
-              const isSelected = activeRole === item.role;
-              return (
-                <button
-                  type="button"
-                  key={item.role}
-                  onClick={() => handleRoleCardClick(item.role)}
-                  style={{
-                    background: isSelected ? '#083B56' : '#F8FAFC',
-                    color: isSelected ? '#ffffff' : '#657785',
-                    border: isSelected ? '1px solid #083B56' : '1px solid #E2E8F0',
-                    padding: '0.45rem 0.25rem',
-                    borderRadius: '10px',
-                    fontSize: '0.6875rem',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.3rem',
-                    transition: 'all 0.2s ease',
-                  }}
-                >
-                  <item.icon size={12} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* ── Login Input Form ── */}
+        {/* ── Production Login Form ── */}
         <form
           onSubmit={handleFormSubmit}
           style={{
@@ -448,13 +240,13 @@ export const LoginScreen: React.FC = () => {
             background: '#ffffff',
             border: '1px solid #E5E9EC',
             borderRadius: '20px',
-            padding: '1.25rem',
+            padding: '1.5rem',
             boxShadow: '0 8px 28px rgba(8, 59, 86, 0.06)',
             boxSizing: 'border-box',
           }}
         >
-          {/* Mobile / Email Field */}
-          <div style={{ marginBottom: '1rem' }}>
+          {/* Email Address Field */}
+          <div style={{ marginBottom: '1.25rem' }}>
             <label
               style={{
                 fontSize: '0.78125rem',
@@ -464,7 +256,7 @@ export const LoginScreen: React.FC = () => {
                 display: 'block',
               }}
             >
-              Mobile Number or Email
+              Email Address
             </label>
             <div
               style={{
@@ -480,44 +272,39 @@ export const LoginScreen: React.FC = () => {
               <div
                 style={{
                   padding: '0.75rem 0.875rem',
-                  fontWeight: 800,
-                  fontSize: '0.875rem',
-                  color: '#083B56',
-                  background: '#EAF6FC',
-                  borderRight: '1px solid #CBD5E1',
+                  color: '#657785',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '0.3rem',
                 }}
               >
-                {phoneNumber.includes('@') ? <Mail size={14} /> : <Smartphone size={14} />}
-                <span>{phoneNumber.includes('@') ? 'ID' : '+91'}</span>
+                <Mail size={16} />
               </div>
               <input
-                type="text"
-                placeholder="Enter email or mobile number"
-                value={phoneNumber}
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="name@community.com"
+                value={email}
                 onChange={(e) => {
-                  setPhoneNumber(e.target.value);
-                  if (error) setError(null);
+                  setEmail(e.target.value);
+                  setError(null);
                 }}
                 style={{
                   flex: 1,
+                  padding: '0.75rem 0.875rem 0.75rem 0',
                   border: 'none',
-                  outline: 'none',
                   background: 'transparent',
-                  padding: '0.75rem 0.875rem',
-                  fontSize: '0.9375rem',
+                  fontSize: '0.875rem',
                   fontWeight: 600,
                   color: '#083B56',
-                  width: '100%',
+                  outline: 'none',
                 }}
               />
             </div>
           </div>
 
-          {/* Password Field with Toggle */}
-          <div style={{ marginBottom: '1.25rem' }}>
+          {/* Password Field */}
+          <div style={{ marginBottom: '0.75rem' }}>
             <div
               style={{
                 display: 'flex',
@@ -535,19 +322,18 @@ export const LoginScreen: React.FC = () => {
               >
                 Password
               </label>
-              <span
+              <Link
+                to="/forgot-password"
                 style={{
-                  fontSize: '0.6875rem',
+                  fontSize: '0.75rem',
                   fontWeight: 700,
                   color: '#F06543',
-                  cursor: 'pointer',
+                  textDecoration: 'none',
                 }}
-                onClick={() => setShowOtpModal(true)}
               >
-                Use Demo OTP (4092)
-              </span>
+                Forgot Password?
+              </Link>
             </div>
-
             <div
               style={{
                 display: 'flex',
@@ -555,234 +341,228 @@ export const LoginScreen: React.FC = () => {
                 background: '#F8FAFC',
                 border: '1px solid #CBD5E1',
                 borderRadius: '12px',
-                padding: '0 0.875rem',
-                transition: 'border-color 0.2s ease',
+                overflow: 'hidden',
+                position: 'relative',
               }}
             >
-              <Lock size={16} color="#657785" style={{ flexShrink: 0 }} />
+              <div
+                style={{
+                  padding: '0.75rem 0.875rem',
+                  color: '#657785',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                <Lock size={16} />
+              </div>
               <input
                 type={showPassword ? 'text' : 'password'}
-                placeholder="Enter password"
+                required
+                autoComplete="current-password"
+                placeholder="Enter your password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setError(null);
+                }}
                 style={{
                   flex: 1,
+                  padding: '0.75rem 2.5rem 0.75rem 0',
                   border: 'none',
-                  outline: 'none',
                   background: 'transparent',
-                  padding: '0.75rem 0.625rem',
-                  fontSize: '0.9375rem',
+                  fontSize: '0.875rem',
                   fontWeight: 600,
                   color: '#083B56',
-                  width: '100%',
+                  outline: 'none',
                 }}
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
                 style={{
+                  position: 'absolute',
+                  right: '12px',
                   background: 'none',
                   border: 'none',
-                  color: '#657785',
+                  padding: 0,
                   cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '0.25rem',
+                  color: '#657785',
                 }}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
               >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
           </div>
 
-          {/* Primary Coral CTA Button */}
+          {/* Primary Action Button */}
           <button
             type="submit"
             disabled={loading}
             style={{
               width: '100%',
-              minHeight: '50px',
-              borderRadius: '14px',
               background: '#F06543',
               color: '#ffffff',
-              fontSize: '0.9375rem',
-              fontWeight: 800,
               border: 'none',
+              padding: '0.875rem',
+              borderRadius: '14px',
+              fontWeight: 800,
+              fontSize: '0.9375rem',
               cursor: loading ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               gap: '0.5rem',
-              boxShadow: '0 6px 18px rgba(240, 101, 67, 0.35)',
-              transition: 'all 0.2s ease',
-              opacity: loading ? 0.85 : 1,
+              boxShadow: '0 8px 24px rgba(240, 101, 67, 0.4)',
+              transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+              opacity: loading ? 0.7 : 1,
+              marginTop: '1.25rem',
             }}
           >
             {loading ? (
               <>
                 <Loader2 size={18} className="animate-spin" />
-                <span>Signing in...</span>
+                <span>Authenticating...</span>
               </>
             ) : (
               <>
-                <span>Sign In as {MOCK_USERS[activeRole]?.roleLabel || activeRole}</span>
-                <ArrowRight size={18} strokeWidth={2.5} />
+                <span>Sign In</span>
+                <ArrowRight size={18} />
               </>
             )}
           </button>
-        </form>
 
-        {/* Security & Access Trust Note */}
-        <div
-          style={{
-            marginTop: '1.25rem',
-            textAlign: 'center',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '0.4rem',
-          }}
-        >
+          {/* Invitation Activation Entry Point */}
           <div
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              color: '#657785',
-            }}
-          >
-            <ShieldCheck size={14} color="#F06543" />
-            <span>Encrypted Gate &amp; Society Access Control</span>
-          </div>
-          <p style={{ fontSize: '0.75rem', color: '#657785', margin: 0 }}>
-            Need flat credentials?{' '}
-            <span
-              style={{ color: '#F06543', fontWeight: 800, cursor: 'pointer' }}
-              onClick={() => executeLogin('secretary')}
-            >
-              Contact Secretary
-            </span>
-          </p>
-        </div>
-      </div>
-
-      {/* Demo OTP Modal */}
-      {showOtpModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(8, 59, 86, 0.65)',
-            backdropFilter: 'blur(6px)',
-            WebkitBackdropFilter: 'blur(6px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '1rem',
-          }}
-        >
-          <div
-            style={{
-              background: '#ffffff',
-              borderRadius: '20px',
-              padding: '1.75rem 1.5rem',
-              maxWidth: '360px',
-              width: '100%',
+              marginTop: '1.5rem',
+              paddingTop: '1.25rem',
+              borderTop: '1px solid #F1F5F9',
               textAlign: 'center',
-              boxShadow: '0 20px 45px rgba(8, 59, 86, 0.25)',
-              boxSizing: 'border-box',
             }}
           >
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: '14px',
-                background: '#FFF0EC',
-                color: '#F06543',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginBottom: '0.75rem',
-              }}
-            >
-              <Lock size={22} />
-            </div>
-
-            <h3
-              style={{
-                fontSize: '1.25rem',
-                fontWeight: 900,
-                color: '#083B56',
-                margin: '0 0 0.35rem 0',
-              }}
-            >
-              Mobile OTP Verification
-            </h3>
             <p
               style={{
                 fontSize: '0.8125rem',
                 color: '#657785',
-                margin: '0 0 1.25rem 0',
-                lineHeight: 1.4,
+                margin: '0 0 0.5rem 0',
+                fontWeight: 500,
               }}
             >
-              Enter verification code sent to +91 {phoneNumber || '9876543210'}
+              Have a society invite code?
             </p>
+            <Link
+              to="/activate"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                fontSize: '0.875rem',
+                fontWeight: 800,
+                color: '#083B56',
+                textDecoration: 'none',
+              }}
+            >
+              <KeyRound size={15} color="#F06543" />
+              <span>Activate Your Account</span>
+            </Link>
+          </div>
+        </form>
 
-            <form onSubmit={handleOtpVerify}>
-              <input
-                type="text"
-                maxLength={6}
-                value={otpInput}
-                onChange={(e) => setOtpInput(e.target.value)}
-                placeholder="4092"
+        {/* Welcome / Onboarding Link */}
+        <div style={{ textAlign: 'center', marginTop: '1.25rem' }}>
+          <Link
+            to="/"
+            style={{
+              fontSize: '0.8125rem',
+              fontWeight: 700,
+              color: '#657785',
+              textDecoration: 'none',
+            }}
+          >
+            ← Back to Welcome Carousel
+          </Link>
+        </div>
+
+        {/* ── Developer Personas Collapsible (Strictly DEV Only) ── */}
+        {isDevEnvironment && (
+          <div
+            style={{
+              width: '100%',
+              marginTop: '2rem',
+              borderTop: '1px dashed #CBD5E1',
+              paddingTop: '1rem',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setShowDevPersonas(!showDevPersonas)}
+              style={{
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0.5rem',
+                color: '#94A3B8',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Sparkles size={13} />
+                <span>DEV: Quick-Fill Test Credentials</span>
+              </div>
+              <ChevronDown
+                size={14}
                 style={{
-                  width: '100%',
-                  textAlign: 'center',
-                  fontSize: '1.75rem',
-                  fontWeight: 900,
-                  letterSpacing: '0.3em',
-                  padding: '0.625rem',
-                  border: '1.5px solid #CBD5E1',
-                  borderRadius: '12px',
-                  outline: 'none',
-                  marginBottom: '1rem',
-                  color: '#083B56',
-                  boxSizing: 'border-box',
+                  transform: showDevPersonas ? 'rotate(180deg)' : 'none',
+                  transition: 'transform 0.2s ease',
                 }}
               />
-              <button
-                type="submit"
-                disabled={loading}
+            </button>
+
+            {showDevPersonas && (
+              <div
                 style={{
-                  width: '100%',
-                  minHeight: '48px',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: '0.4rem',
+                  marginTop: '0.5rem',
+                  background: '#F8FAFC',
+                  padding: '0.75rem',
                   borderRadius: '12px',
-                  background: '#F06543',
-                  color: '#ffffff',
-                  fontSize: '0.9375rem',
-                  fontWeight: 800,
-                  border: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '0.5rem',
+                  border: '1px solid #E2E8F0',
                 }}
               >
-                {loading ? <Loader2 size={18} className="animate-spin" /> : <span>Verify &amp; Proceed</span>}
-              </button>
-            </form>
+                {(['resident', 'secretary', 'guard', 'committee', 'facility_manager', 'vendor', 'admin'] as UserRole[]).map((role) => (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => handleQuickFill(role)}
+                    style={{
+                      background: '#ffffff',
+                      border: '1px solid #CBD5E1',
+                      borderRadius: '8px',
+                      padding: '0.35rem',
+                      fontSize: '0.6875rem',
+                      fontWeight: 700,
+                      color: '#083B56',
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {role.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };
-
-export default LoginScreen;

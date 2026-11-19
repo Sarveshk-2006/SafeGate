@@ -5,6 +5,8 @@ import { Building2, Users, Shield, Bell, User } from 'lucide-react';
 const DRAWER_NAV = [
   { label: 'Super Admin', path: '/super-admin', icon: Shield },
   { label: 'Societies', path: '/super-admin/societies', icon: Building2 },
+  { label: 'Users Directory', path: '/super-admin/users', icon: Users },
+  { label: 'Admin Profile', path: '/super-admin/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [

@@ -913,6 +913,97 @@ export const apiClient = {
       body: JSON.stringify(data),
     }),
 
+  // Invitations & Password Reset (Phase 4.8)
+  verifyInvitation: (token: string) =>
+    apiRequest<{
+      valid: boolean;
+      code?: string;
+      message?: string;
+      invitation?: {
+        id: string;
+        email: string;
+        role: string;
+        societyId: string;
+        societyName: string;
+        residentName?: string;
+        flatNumber?: string;
+        expiresAt: string;
+      };
+    }>(`/auth/invitation/verify?token=${encodeURIComponent(token)}`),
+
+  acceptInvitation: (data: { token: string; password: string; name?: string }) =>
+    apiRequest<{
+      success: boolean;
+      user: {
+        id: string;
+        email: string;
+        name: string;
+        role: string;
+        societyId: string;
+      };
+      message: string;
+    }>('/auth/invitation/accept', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  requestPasswordReset: (email: string) =>
+    apiRequest<{ success: boolean; message: string }>('/auth/password-reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  verifyPasswordResetToken: (token: string) =>
+    apiRequest<{ valid: boolean; email?: string; message?: string }>(
+      `/auth/password-reset/verify?token=${encodeURIComponent(token)}`
+    ),
+
+  confirmPasswordReset: (data: { token: string; newPassword: string }) =>
+    apiRequest<{ success: boolean; message: string }>('/auth/password-reset/confirm', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getResidentInvitationStatus: (residentId: string) =>
+    apiRequest<{
+      status: 'NOT_INVITED' | 'PENDING' | 'ACCEPTED' | 'ACTIVATED' | 'EXPIRED' | 'REVOKED' | 'DELIVERY_FAILED';
+      invitationId?: string;
+      email?: string;
+      deliveryStatus?: string;
+      sentAt?: string;
+      expiresAt?: string;
+      resendCount?: number;
+      lastResentAt?: string;
+    }>(`/secretary/residents/${residentId}/invitation-status`),
+
+  inviteResident: (residentId: string, email?: string) =>
+    apiRequest<{
+      success: boolean;
+      message: string;
+      invitationId: string;
+      deliveryStatus: string;
+      expiresAt: string;
+    }>(`/secretary/residents/${residentId}/invite`, {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resendResidentInvite: (residentId: string) =>
+    apiRequest<{
+      success: boolean;
+      message: string;
+      invitationId: string;
+      resendCount: number;
+      expiresAt: string;
+    }>(`/secretary/residents/${residentId}/resend-invite`, {
+      method: 'POST',
+    }),
+
+  revokeResidentInvite: (residentId: string) =>
+    apiRequest<{ success: boolean; message: string }>(`/secretary/residents/${residentId}/revoke-invite`, {
+      method: 'POST',
+    }),
+
   // Societies
   getSocieties: () => apiRequest<any[]>('/societies'),
   createSociety: (data: any) =>

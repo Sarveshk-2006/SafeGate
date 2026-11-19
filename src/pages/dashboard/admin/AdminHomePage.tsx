@@ -2,372 +2,372 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Users,
-  FileText,
+  CheckSquare,
   Wrench,
   Sparkles,
   HardHat,
   Calendar,
-  Plus,
-  List,
-  Megaphone,
   Shield,
-  Activity,
   CreditCard,
-  ArrowRight,
+  DollarSign,
+  Baby,
+  ShieldCheck,
+  Droplets,
+  TrendingUp,
+  Radio,
 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { societyService } from '../../../services/societyService';
-
-const QUICK_ACTIONS = [
-  { label: 'Residents', path: '/admin/residents', icon: Users, desc: 'Manage & Provision' },
-  { label: 'Committee', path: '/admin/committee', icon: Shield, desc: 'Elected officers' },
-  { label: 'Complaints', path: '/admin/requests', icon: FileText, desc: 'Resolve issues' },
-  { label: 'Maintenance', path: '/admin/maintenance', icon: Wrench, desc: 'Work orders' },
-  { label: 'Amenities', path: '/admin/amenities', icon: Sparkles, desc: 'Clubhouse & slots' },
-  { label: 'Staff & Guards', path: '/admin/staff', icon: HardHat, desc: 'Gate rosters' },
-  { label: 'Finances', path: '/admin/billing', icon: CreditCard, desc: 'Dues & invoices' },
-];
-
-const RECENT_ACTIVITIES = [
-  {
-    id: 1,
-    title: 'Visitor approved for A-204',
-    time: '5 mins ago',
-    icon: Users,
-    color: '#3F8F58',
-    bg: '#EDF8F0',
-  },
-  {
-    id: 2,
-    title: 'Maintenance paid by B-302',
-    time: '20 mins ago',
-    icon: Wrench,
-    color: '#176B91',
-    bg: '#EAF6FC',
-  },
-  {
-    id: 3,
-    title: 'Emergency drill scheduled for Wing C',
-    time: '1 hour ago',
-    icon: Shield,
-    color: '#D97706',
-    bg: '#FEF3C7',
-  },
-];
+import { apiClient } from '../../../services/apiClient';
+import {
+  PortalGreetingBanner,
+  PortalUrgentAlertBanner,
+  PortalHeroActionCards,
+  PortalQuickActionsGrid,
+  PortalStatusBadges,
+  PortalActionRequiredList,
+  PortalActivityList,
+} from '../../../components/portal/PortalOverviewComponents';
 
 export const AdminHomePage: React.FC = () => {
   const navigate = useNavigate();
   const { currentUser } = useAuth();
   const currentSocietyId = currentUser?.societyId || 'soc-gvs';
 
-  const [residentsCount, setResidentsCount] = useState(0);
-  const [staffCount, setStaffCount] = useState(0);
+  const [residentsCount, setResidentsCount] = useState(14);
+  const [staffCount, setStaffCount] = useState(6);
+  const [announcements, setAnnouncements] = useState<any[]>([]);
+  const [urgentAlert, setUrgentAlert] = useState<{ title: string; message: string } | null>(null);
 
   useEffect(() => {
-    const res = societyService.getResidents(currentSocietyId);
-    const staff = societyService.getStaff(currentSocietyId);
-    setResidentsCount(res.length || 14);
-    setStaffCount(staff.length || 6);
+    try {
+      const res = societyService.getResidents(currentSocietyId);
+      const staff = societyService.getStaff(currentSocietyId);
+      if (res && res.length > 0) setResidentsCount(res.length);
+      if (staff && staff.length > 0) setStaffCount(staff.length);
+    } catch {}
+
+    apiClient.getAnnouncements().then((res) => {
+      if (res && Array.isArray(res) && res.length > 0) {
+        setAnnouncements(res);
+        const urgent = res.find((a: any) => a.isUrgent);
+        if (urgent) {
+          setUrgentAlert({ title: urgent.title, message: urgent.content || urgent.summary });
+        }
+      }
+    }).catch(() => {});
   }, [currentSocietyId]);
 
+  const secretaryName = currentUser?.name || 'Society Secretary';
+  const societyName = currentUser?.societyName || 'Green Valley Society';
+
   const now = new Date();
-  const hour = now.getHours();
-  const greeting = hour < 12 ? 'Good Morning' : hour < 17 ? 'Good Afternoon' : 'Good Evening';
-  const formattedDate = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  const formattedDay = now.toLocaleDateString('en-IN', { weekday: 'long' });
+  const formattedDate = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  const formattedDay = now.toLocaleDateString('en-IN', { weekday: 'short' });
 
   return (
-    <div style={{ minHeight: '100%', background: 'var(--aarizo-page, #F7FBFE)', maxWidth: '1280px', margin: '0 auto', padding: '1rem 1rem 6rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      {/* ── 1. Greeting Card (Screenshot match) ── */}
-      <div
-        style={{
-          background: 'linear-gradient(135deg, #EAF6FC 0%, #F4FAFE 100%)',
-          border: '1px solid var(--aarizo-border, #DCE8EF)',
-          borderRadius: '20px',
-          padding: '1.15rem 1.35rem',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          boxShadow: '0 2px 10px rgba(8, 59, 86, 0.04)',
-        }}
-      >
-        <div>
-          <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--aarizo-navy, #083B56)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-            <span>{greeting}, Secretary</span>
-            <span>👋</span>
-          </div>
-          <p style={{ fontSize: '0.78125rem', color: 'var(--aarizo-text-secondary, #657785)', margin: '0.25rem 0 0', fontWeight: 500 }}>
-            Here is your live society overview for {currentUser?.societyName || 'Green Valley Society'}.
-          </p>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', justifyContent: 'flex-end', color: 'var(--aarizo-blue, #176B91)' }}>
-            <Calendar size={15} />
-          </div>
-          <div style={{ fontSize: '0.875rem', fontWeight: 800, color: 'var(--aarizo-navy, #083B56)', marginTop: '0.15rem' }}>
-            {formattedDate}
-          </div>
-          <div style={{ fontSize: '0.71875rem', color: 'var(--aarizo-text-muted, #8B9AA5)', fontWeight: 600 }}>
-            {formattedDay}
-          </div>
-        </div>
-      </div>
-
-      {/* ── 2. Real-Time Operations Overview Metrics ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
-        {[
-          { label: 'Registered Residents', value: residentsCount, icon: Users, color: '#083B56', bg: '#F4FAFE', border: '#DCE8EF', path: '/admin/residents' },
-          { label: 'Active Security Guards', value: staffCount, icon: Shield, color: '#059669', bg: '#ECFDF5', border: '#A7F3D0', path: '/admin/staff' },
-          { label: 'Realtime Operations', value: 'Live 99.9%', icon: Activity, color: '#F06543', bg: '#FFF0EC', border: '#FDE3DC', path: '/admin/realtime' },
-          { label: 'Collections Health', value: '98.4%', icon: CreditCard, color: '#176B91', bg: '#EAF6FC', border: '#DCE8EF', path: '/admin/billing' },
-        ].map((stat) => {
-          const Icon = stat.icon;
-          return (
-            <button
-              key={stat.label}
-              onClick={() => navigate(stat.path)}
-              style={{
-                background: '#ffffff',
-                border: `1px solid ${stat.border}`,
-                borderRadius: '16px',
-                padding: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.85rem',
-                textAlign: 'left',
-                cursor: 'pointer',
-                boxShadow: '0 2px 8px rgba(8, 59, 86, 0.04)',
-                transition: 'transform 0.15s ease, box-shadow 0.15s ease',
-              }}
-            >
-              <div
-                style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: '12px',
-                  background: stat.bg,
-                  color: stat.color,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                }}
-              >
-                <Icon size={22} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: '0.6875rem', fontWeight: 700, textTransform: 'uppercase', color: '#657785', letterSpacing: '0.04em' }}>
-                  {stat.label}
-                </div>
-                <div style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--aarizo-navy, #083B56)', marginTop: '0.1rem' }}>
-                  {stat.value}
-                </div>
-              </div>
-              <ArrowRight size={14} color="#94A3B8" />
-            </button>
-          );
-        })}
-      </div>
-
-      {/* ── 3. Quick Actions Grid ── */}
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-          <h2 style={{ fontSize: '0.9375rem', fontWeight: 800, color: 'var(--aarizo-navy, #083B56)', margin: 0 }}>
-            Quick Management Hub
-          </h2>
-          <span style={{ fontSize: '0.75rem', color: '#657785', fontWeight: 600 }}>1-Click Operations</span>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem' }}>
-          {QUICK_ACTIONS.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.label}
-                onClick={() => navigate(item.path)}
-                style={{
-                  background: '#ffffff',
-                  border: '1px solid var(--aarizo-border-soft, #E8F1F5)',
-                  borderRadius: '16px',
-                  padding: '1.15rem 0.75rem 1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  boxShadow: '0 2px 8px rgba(8, 59, 86, 0.04)',
-                  cursor: 'pointer',
-                  minHeight: '100px',
-                  transition: 'all 0.2s ease',
-                }}
-              >
-                <div
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: '12px',
-                    background: 'var(--aarizo-pale-blue, #F4FAFE)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--aarizo-navy, #083B56)',
-                  }}
-                >
-                  <Icon size={22} strokeWidth={2} />
-                </div>
-                <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: 'var(--aarizo-text, #203746)' }}>
-                  {item.label}
-                </span>
-                <span style={{ fontSize: '0.6875rem', color: '#657785', fontWeight: 500 }}>
-                  {item.desc}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ── 3. Announcements & Recent Activity Responsive Grid ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
-        {/* Today's Announcements */}
-        <div>
-          <h2 style={{ fontSize: '0.9375rem', fontWeight: 800, color: 'var(--aarizo-navy, #083B56)', margin: '0 0 0.75rem 0' }}>
-            Today's Announcements
-          </h2>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0, backgroundColor: 'var(--aarizo-page, #F7FBFE)', minHeight: '100%', paddingBottom: '5rem' }}>
+      {/* ── 1. Greeting Banner in Pale Sky Blue (#EAF6FC) ── */}
+      <PortalGreetingBanner
+        userName={secretaryName}
+        roleBadge="Secretary"
+        roleBadgeBg="#EAF6FC"
+        roleBadgeColor="#083B56"
+        contextSubtitle={`Managing ${societyName} · ${residentsCount} Units`}
+        rightAction={
           <div
             style={{
+              padding: '0.35rem 0.65rem',
+              borderRadius: '12px',
               background: '#ffffff',
-              border: '1px solid var(--aarizo-border-soft, #E8F1F5)',
-              borderRadius: '16px',
-              padding: '1.25rem',
-              boxShadow: '0 2px 10px rgba(8, 59, 86, 0.05)',
-              height: 'calc(100% - 2rem)',
+              border: '1px solid var(--aarizo-border, #DCE8EF)',
               display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '0.35rem',
+              color: 'var(--aarizo-navy, #083B56)',
             }}
           >
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: '50%',
-                    background: 'var(--aarizo-light-blue, #EAF6FC)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--aarizo-blue, #176B91)',
-                  }}
-                >
-                  <Megaphone size={18} />
-                </div>
-                <span style={{ fontSize: '0.9375rem', fontWeight: 800, color: 'var(--aarizo-navy, #083B56)' }}>
-                  Active Notices
-                </span>
-              </div>
-              <p style={{ fontSize: '0.8125rem', color: 'var(--aarizo-text-muted, #8B9AA5)', margin: '0 0 1rem 0' }}>
-                No urgent society-wide announcements broadcasted for today.
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '0.625rem' }}>
+            <Calendar size={14} color="#176B91" />
+            <span style={{ fontSize: '0.75rem', fontWeight: 800 }}>
+              {formattedDate}, {formattedDay}
+            </span>
+          </div>
+        }
+      />
+
+      {/* ── 2. Urgent Society Alert ── */}
+      {urgentAlert && (
+        <PortalUrgentAlertBanner
+          title={urgentAlert.title}
+          message={urgentAlert.message}
+          onDismiss={() => setUrgentAlert(null)}
+          actionLabel="View Notices"
+          onAction={() => navigate('/admin/community')}
+        />
+      )}
+
+      {/* Main Content Area */}
+      <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {/* ── 3. High-Priority Admin Hero Action Cards ── */}
+        <PortalHeroActionCards
+          items={[
+            {
+              id: 'manage-residents',
+              title: 'Resident Onboarding',
+              subtitle: `${residentsCount} units registered · Verify new residents`,
+              icon: Users,
+              iconColor: '#E5B842',
+              gradient: 'linear-gradient(135deg, #083B56 0%, #176B91 100%)',
+              onClick: () => navigate('/admin/residents'),
+            },
+            {
+              id: 'manage-requests',
+              title: 'Complaints & NOCs',
+              subtitle: 'Unified Request Center · Action pending items',
+              icon: CheckSquare,
+              iconColor: '#EA580C',
+              gradient: 'linear-gradient(135deg, #FFF7ED 0%, #FFEDD5 100%)',
+              textColor: '#9A3412',
+              subtextColor: '#C2410C',
+              borderColor: '#FED7AA',
+              boxShadow: '0 4px 14px rgba(240, 101, 67, 0.08)',
+              onClick: () => navigate('/admin/requests'),
+            },
+          ]}
+        />
+
+        {/* ── 4. Quick Actions Grid (Screenshot matched) ── */}
+        <PortalQuickActionsGrid
+          title="Administrative Hub"
+          subtitle="One-Tap Operations"
+          items={[
+            {
+              id: 'residents',
+              label: 'Residents',
+              icon: Users,
+              color: '#083B56',
+              bg: '#EAF6FC',
+              onClick: () => navigate('/admin/residents'),
+            },
+            {
+              id: 'staff',
+              label: 'Staff Roster',
+              icon: HardHat,
+              color: '#059669',
+              bg: '#ECFDF5',
+              onClick: () => navigate('/admin/staff'),
+            },
+            {
+              id: 'child-safety',
+              label: 'Child Desk',
+              icon: Baby,
+              color: '#D97706',
+              bg: '#FEF3C7',
+              onClick: () => navigate('/admin/child-safety'),
+            },
+            {
+              id: 'safety-command',
+              label: 'Safety Cmd',
+              icon: ShieldCheck,
+              color: '#DC2626',
+              bg: '#FEF2F2',
+              onClick: () => navigate('/admin/safety-command'),
+            },
+            {
+              id: 'maintenance',
+              label: 'Maintenance',
+              icon: Wrench,
+              color: '#176B91',
+              bg: '#EAF6FC',
+              onClick: () => navigate('/admin/maintenance'),
+            },
+            {
+              id: 'billing',
+              label: 'Finances',
+              icon: CreditCard,
+              color: '#176B91',
+              bg: '#EAF6FC',
+              onClick: () => navigate('/admin/billing'),
+            },
+            {
+              id: 'amenities',
+              label: 'Amenities',
+              icon: Sparkles,
+              color: '#7C3AED',
+              bg: '#F5F3FF',
+              onClick: () => navigate('/admin/amenities'),
+            },
+            {
+              id: 'expenses',
+              label: 'Expenses',
+              icon: DollarSign,
+              color: '#059669',
+              bg: '#ECFDF5',
+              onClick: () => navigate('/admin/expenses'),
+            },
+          ]}
+        />
+
+        {/* ── 5. Live Society Operations Status Badges ── */}
+        <PortalStatusBadges
+          title="Society Operations Status"
+          items={[
+            { label: 'Security', icon: Shield, status: 'good', statusText: `${staffCount} on duty` },
+            { label: 'Water', icon: Droplets, status: 'normal', statusText: 'Normal' },
+            { label: 'Housekeeping', icon: Sparkles, status: 'good', statusText: 'Done' },
+            { label: 'Realtime SSE', icon: Radio, status: 'good', statusText: '99.9% Live' },
+            { label: 'Collections', icon: CreditCard, status: 'good', statusText: '98.4% Paid' },
+          ]}
+        />
+
+        {/* ── 6. Action Required / Pending Approvals ── */}
+        <PortalActionRequiredList
+          title="Action Required"
+          items={[
+            {
+              id: 'act-1',
+              label: 'New Resident Move-In Verification — B-302',
+              subtitle: 'Aadhaar ID and registered rent agreement pending approval',
+              urgent: true,
+              onClick: () => navigate('/admin/residents'),
+            },
+            {
+              id: 'act-2',
+              label: 'Plumbing Breakdown Ticket #802 — Clubhouse',
+              subtitle: 'Assigned to CoolCare Servicing · SLA due in 2 hours',
+              urgent: false,
+              onClick: () => navigate('/admin/requests'),
+            },
+            {
+              id: 'act-3',
+              label: 'Vendor AMC Renewal Invoice — Otis Elevator',
+              subtitle: 'Quarterly maintenance invoice ₹45,000 awaiting secretary sign-off',
+              urgent: false,
+              onClick: () => navigate('/admin/expenses'),
+            },
+          ]}
+        />
+
+        {/* ── 7. Responsive Desktop 2-Col Grid for Activity & Announcements ── */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+          {/* Recent Operations Activity */}
+          <PortalActivityList
+            title="Recent Administrative Activity"
+            items={[
+              {
+                id: 'op-1',
+                text: 'Visitor Pass approved for Flat A-204 (Rajesh Mehta)',
+                subtext: 'Pre-approved via Resident Mobile App',
+                time: '5 mins ago',
+                icon: Users,
+                color: '#059669',
+                bg: '#ECFDF5',
+              },
+              {
+                id: 'op-2',
+                text: 'Maintenance Levy collected for Unit B-302 (₹2,400)',
+                subtext: 'Auto-receipt issued via Razorpay',
+                time: '20 mins ago',
+                icon: CreditCard,
+                color: '#176B91',
+                bg: '#EAF6FC',
+              },
+              {
+                id: 'op-3',
+                text: 'Housekeeping Wing C sanitization completed',
+                subtext: 'Staff checklist logged by Sunita Devi',
+                time: '1 hour ago',
+                icon: Sparkles,
+                color: '#D97706',
+                bg: '#FFFBEB',
+              },
+              {
+                id: 'op-4',
+                text: 'Child Safety Pass verified at Main Gate #1',
+                subtext: 'Child Aarav Sharma with authorized guardian',
+                time: '2 hours ago',
+                icon: Baby,
+                color: '#176B91',
+              },
+            ]}
+            onSeeAll={() => navigate('/admin/audit-logs')}
+          />
+
+          {/* Society Announcements */}
+          <section>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.625rem' }}>
+              <h2
+                style={{
+                  fontWeight: 800,
+                  fontSize: '0.8125rem',
+                  color: 'var(--aarizo-navy, #083B56)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  margin: 0,
+                }}
+              >
+                Society Notices & Circulars
+              </h2>
               <button
+                type="button"
                 onClick={() => navigate('/admin/community')}
                 style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.45rem 0.875rem',
-                  background: 'var(--aarizo-navy, #083B56)',
-                  color: '#ffffff',
-                  borderRadius: '9999px',
                   fontSize: '0.75rem',
+                  color: 'var(--aarizo-blue, #176B91)',
                   fontWeight: 700,
+                  background: 'none',
                   border: 'none',
                   cursor: 'pointer',
                 }}
               >
-                <Plus size={14} /> New Notice
-              </button>
-              <button
-                onClick={() => navigate('/admin/community')}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.45rem 0.875rem',
-                  background: 'var(--aarizo-light-blue, #EAF6FC)',
-                  color: 'var(--aarizo-navy, #083B56)',
-                  border: '1px solid var(--aarizo-border, #DCE8EF)',
-                  borderRadius: '9999px',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                }}
-              >
-                <List size={14} /> View All
+                Manage Notices →
               </button>
             </div>
-          </div>
-        </div>
-
-        {/* Recent Activity */}
-        <div>
-          <h2 style={{ fontSize: '0.9375rem', fontWeight: 800, color: 'var(--aarizo-navy, #083B56)', margin: '0 0 0.75rem 0' }}>
-            Recent Activity
-          </h2>
-          <div
-            style={{
-              background: '#ffffff',
-              borderRadius: '16px',
-              border: '1px solid var(--aarizo-border-soft, #E8F1F5)',
-              boxShadow: '0 2px 10px rgba(8, 59, 86, 0.05)',
-              overflow: 'hidden',
-            }}
-          >
-            {RECENT_ACTIVITIES.map((act, idx) => {
-              const Icon = act.icon;
-              return (
-                <div
-                  key={act.id}
-                  style={{
-                    padding: '0.875rem 1rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.75rem',
-                    borderBottom: idx < RECENT_ACTIVITIES.length - 1 ? '1px solid var(--aarizo-border-soft, #E8F1F5)' : 'none',
-                  }}
-                >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {announcements.length > 0 ? (
+                announcements.slice(0, 3).map((ann, i) => (
                   <div
+                    key={ann.id || i}
                     style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: '10px',
-                      background: act.bg,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: act.color,
-                      flexShrink: 0,
+                      background: '#ffffff',
+                      borderRadius: '16px',
+                      border: '1px solid var(--aarizo-border-soft, #E8F1F5)',
+                      padding: '0.875rem 1rem',
+                      boxShadow: '0 2px 8px rgba(8, 59, 86, 0.04)',
                     }}
                   >
-                    <Icon size={18} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '0.84375rem', fontWeight: 700, color: 'var(--aarizo-text, #203746)' }}>
-                      {act.title}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+                      <TrendingUp size={16} style={{ color: 'var(--aarizo-blue, #176B91)', flexShrink: 0, marginTop: 2 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.84375rem', color: 'var(--aarizo-navy, #083B56)', marginBottom: '0.25rem' }}>
+                          {ann.title}
+                        </div>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--aarizo-text-secondary, #657785)', margin: 0, lineHeight: 1.4 }}>
+                          {ann.content || ann.summary}
+                        </p>
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.71875rem', color: 'var(--aarizo-text-muted, #8B9AA5)', marginTop: '0.125rem' }}>
-                      {act.time}
-                    </div>
                   </div>
+                ))
+              ) : (
+                <div
+                  style={{
+                    background: '#ffffff',
+                    borderRadius: '16px',
+                    border: '1px solid var(--aarizo-border-soft, #E8F1F5)',
+                    padding: '1rem',
+                    boxShadow: '0 2px 8px rgba(8, 59, 86, 0.04)',
+                  }}
+                >
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--aarizo-text-secondary, #657785)', margin: 0 }}>
+                    Notice: Annual General Meeting (AGM) scheduled for Sunday 10:00 AM at the Clubhouse. All registered owners requested to attend.
+                  </p>
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </div>
+          </section>
         </div>
       </div>
     </div>
   );
 };
-
-export default AdminHomePage;

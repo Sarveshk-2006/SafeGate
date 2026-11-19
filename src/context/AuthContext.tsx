@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { 
-  onIdTokenChanged, 
-  signInWithPhoneNumber, 
+import {
+  onIdTokenChanged,
+  signInWithPhoneNumber,
   signOut,
   RecaptchaVerifier,
 } from 'firebase/auth';
@@ -24,7 +24,7 @@ import { MOCK_USERS } from '../mockData/auth/mockUsers';
 import { isNativeApp } from '../utils/nativeMobile';
 import { App } from '@capacitor/app';
 
-export type AuthStatus = 
+export type AuthStatus =
   | 'INITIALIZING'
   | 'AUTHENTICATED'
   | 'UNAUTHENTICATED'
@@ -47,6 +47,7 @@ interface AuthContextProps {
   loginWithProfile: (profile: UserProfile, token?: string) => void;
   logout: () => Promise<void>;
   setError: (err: string | null) => void;
+  updateCurrentUser: (updates: Partial<UserProfile>) => void;
 }
 
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
@@ -88,12 +89,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
   });
-  
+
   const [phoneNumber, setPhoneNumber] = useState('');
   const [countryCode] = useState('+91');
   const [error, setError] = useState<string | null>(null);
   const [tokenRevision, setTokenRevision] = useState(0);
-  
+
   const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
 
   // Phase 2: Authenticated Realtime SSE Lifecycle Synchronization
@@ -144,7 +145,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     return () => {
       if (listenerPromise) {
-        listenerPromise.then((handle: any) => handle && typeof handle.remove === 'function' && handle.remove()).catch(() => {});
+        listenerPromise.then((handle: any) => handle && typeof handle.remove === 'function' && handle.remove()).catch(() => { });
       }
     };
   }, []);
@@ -184,7 +185,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (updatedProfile && updatedProfile.id) {
               setCurrentUser(updatedProfile);
             }
-          } catch {}
+          } catch { }
         }
       }
     };
@@ -288,9 +289,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         if (profile.role !== claimsRole || profile.societyId !== claimsSocietyId) {
-          console.error("Claims mismatch:", { 
-            claims: { role: claimsRole, societyId: claimsSocietyId }, 
-            profile: { role: profile.role, societyId: profile.societyId } 
+          console.error("Claims mismatch:", {
+            claims: { role: claimsRole, societyId: claimsSocietyId },
+            profile: { role: profile.role, societyId: profile.societyId }
           });
           realtimeService.disconnect();
           setStatus('CLAIMS_MISMATCH');
@@ -385,6 +386,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setStatus('UNAUTHENTICATED');
   };
 
+  const updateCurrentUser = (updates: Partial<UserProfile>) => {
+    setCurrentUser((prev) => {
+      if (!prev) return null;
+      const updated: UserProfile = { ...prev, ...updates };
+      try {
+        localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(updated));
+        localStorage.setItem('aarizo_user', JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('aarizo:user-updated', { detail: updated }));
+        }
+      } catch (err) {
+        console.warn('Failed to persist updated user:', err);
+      }
+      return updated;
+    });
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -402,6 +420,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginWithProfile,
         logout,
         setError,
+        updateCurrentUser,
       }}
     >
       {children}

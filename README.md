@@ -1,3 +1,10 @@
+# 🌐 Live Production Application
+> **🚀 Official Live Deployment:** **[https://safegate-chi.vercel.app](https://safegate-chi.vercel.app)**  
+> **🔒 Public Portal Route:** `https://safegate-chi.vercel.app/login`  
+> **📱 Android Native APK:** `android/app/build/outputs/apk/debug/app-debug.apk`  
+
+---
+
 # Dwellora — Smart Residential Society Operating System
 
 **Dwellora** is a comprehensive, enterprise-grade residential society management, security, and operations platform. Designed for modern gated communities, it seamlessly connects residents, security guards, society administrators, committee members, facility managers, vendors, and service personnel through role-tailored portals and real-time operations.

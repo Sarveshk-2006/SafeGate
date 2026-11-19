@@ -1,16 +1,22 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
 import {
   ArrowRight,
   ChevronRight,
+  ChevronLeft,
   Users,
   QrCode,
   Building,
   CreditCard,
   ShieldAlert,
   HeartHandshake,
+  LogIn,
+  KeyRound,
 } from 'lucide-react';
+import imgVisitorManagement from '../../../assets/images/onboarding_visitor_management.png';
+import imgCommunityServices from '../../../assets/images/onboarding_community_services.png';
+import imgFamilyHub from '../../../assets/images/onboarding_family_hub.png';
 import '../auth.css';
 
 interface FloatingBadge {
@@ -39,8 +45,7 @@ const ONBOARDING_SLIDES: OnboardingSlide[] = [
     titlePart2: 'Management',
     subtitle:
       'Pre-approve visitors, track entry history, and manage guest access seamlessly. Keep your society secure with real-time visitor notifications and digital gate passes.',
-    image:
-      'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=800&q=80',
+    image: imgVisitorManagement,
     badges: [
       {
         icon: <Users size={16} color="#ffffff" />,
@@ -65,8 +70,7 @@ const ONBOARDING_SLIDES: OnboardingSlide[] = [
     titlePart2: 'Services',
     subtitle:
       'Connect with neighbors, view official society notices, book clubhouse amenities, and pay maintenance dues seamlessly.',
-    image:
-      'https://images.unsplash.com/photo-1560518883-ce09059eeffa?auto=format&fit=crop&w=800&q=80',
+    image: imgCommunityServices,
     badges: [
       {
         icon: <Building size={16} color="#ffffff" />,
@@ -91,8 +95,7 @@ const ONBOARDING_SLIDES: OnboardingSlide[] = [
     titlePart2: 'Security Hub',
     subtitle:
       'Manage family profiles, registered vehicles, staff attendance, and one-tap emergency SOS broadcasts for complete peace of mind.',
-    image:
-      'https://images.unsplash.com/photo-1582407947304-fd86f028f716?auto=format&fit=crop&w=800&q=80',
+    image: imgFamilyHub,
     badges: [
       {
         icon: <ShieldAlert size={16} color="#ffffff" />,
@@ -118,35 +121,61 @@ export const OnboardingFlow: React.FC = () => {
   const [currentSlideIndex, setCurrentSlideIndex] = useState<number>(0);
   const [isExiting, setIsExiting] = useState<boolean>(false);
 
-  // Live Touch Dragging States for Native-feel Horizontal Carousel
+  // Live Touch / Mouse Dragging States for Native-feel Horizontal Carousel
   const [dragOffset, setDragOffset] = useState<number>(0);
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const touchStartX = useRef<number>(0);
-  const touchStartY = useRef<number>(0);
+  const startX = useRef<number>(0);
+  const startY = useRef<number>(0);
 
   const isLastSlide = currentSlideIndex === ONBOARDING_SLIDES.length - 1;
 
-  const handleComplete = () => {
+  const handleNavigateToLogin = () => {
     if (isExiting) return;
     setIsExiting(true);
     setTimeout(() => {
       completeOnboarding();
       navigate('/login');
-    }, 280);
+    }, 200);
+  };
+
+  const handleNavigateToActivation = () => {
+    if (isExiting) return;
+    setIsExiting(true);
+    setTimeout(() => {
+      completeOnboarding();
+      navigate('/activate');
+    }, 200);
   };
 
   const handleNext = () => {
     if (isLastSlide) {
-      handleComplete();
+      handleNavigateToActivation();
     } else {
       setCurrentSlideIndex((prev) => Math.min(prev + 1, ONBOARDING_SLIDES.length - 1));
     }
   };
 
-  // Touch Swipe Handlers with Live Horizontal Dragging
+  const handlePrev = () => {
+    setCurrentSlideIndex((prev) => Math.max(prev - 1, 0));
+  };
+
+  // Keyboard navigation: Left/Right arrows
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') {
+        handleNext();
+      } else if (e.key === 'ArrowLeft') {
+        handlePrev();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentSlideIndex]);
+
+  // Touch Swipe Handlers
   const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX;
-    touchStartY.current = e.touches[0].clientY;
+    startX.current = e.touches[0].clientX;
+    startY.current = e.touches[0].clientY;
     setIsDragging(true);
   };
 
@@ -154,10 +183,9 @@ export const OnboardingFlow: React.FC = () => {
     if (!isDragging) return;
     const currentX = e.touches[0].clientX;
     const currentY = e.touches[0].clientY;
-    const deltaX = currentX - touchStartX.current;
-    const deltaY = Math.abs(currentY - touchStartY.current);
+    const deltaX = currentX - startX.current;
+    const deltaY = Math.abs(currentY - startY.current);
 
-    // Only drag horizontally if motion is primarily horizontal
     if (Math.abs(deltaX) > deltaY) {
       setDragOffset(deltaX);
     }
@@ -167,14 +195,42 @@ export const OnboardingFlow: React.FC = () => {
     if (!isDragging) return;
     setIsDragging(false);
 
-    const threshold = 45; // Minimum px distance for slide change
+    const threshold = 45;
     if (dragOffset < -threshold) {
-      // Swiped Left -> Go Next
       if (currentSlideIndex < ONBOARDING_SLIDES.length - 1) {
         setCurrentSlideIndex((prev) => prev + 1);
       }
     } else if (dragOffset > threshold) {
-      // Swiped Right -> Go Prev
+      if (currentSlideIndex > 0) {
+        setCurrentSlideIndex((prev) => prev - 1);
+      }
+    }
+    setDragOffset(0);
+  };
+
+  // Mouse Drag Handlers for Desktop
+  const handleMouseDown = (e: React.MouseEvent) => {
+    startX.current = e.clientX;
+    startY.current = e.clientY;
+    setIsDragging(true);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    const deltaX = e.clientX - startX.current;
+    setDragOffset(deltaX);
+  };
+
+  const handleMouseUp = () => {
+    if (!isDragging) return;
+    setIsDragging(false);
+
+    const threshold = 45;
+    if (dragOffset < -threshold) {
+      if (currentSlideIndex < ONBOARDING_SLIDES.length - 1) {
+        setCurrentSlideIndex((prev) => prev + 1);
+      }
+    } else if (dragOffset > threshold) {
       if (currentSlideIndex > 0) {
         setCurrentSlideIndex((prev) => prev - 1);
       }
@@ -195,9 +251,10 @@ export const OnboardingFlow: React.FC = () => {
         flexDirection: 'column',
         justifyContent: 'space-between',
         fontFamily: 'Plus Jakarta Sans, system-ui, -apple-system, sans-serif',
+        userSelect: isDragging ? 'none' : 'auto',
       }}
     >
-      {/* ── Warm Organic Background Shapes matching reference image ── */}
+      {/* ── Warm Organic Background Shapes ── */}
       <svg
         style={{
           position: 'absolute',
@@ -211,6 +268,7 @@ export const OnboardingFlow: React.FC = () => {
         viewBox="0 0 390 240"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
       >
         <path
           d="M180 0C280 0 390 70 390 180V0H180Z"
@@ -233,6 +291,7 @@ export const OnboardingFlow: React.FC = () => {
         viewBox="0 0 390 220"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
       >
         <circle cx="20" cy="200" r="150" fill="#F5EBE0" fillOpacity="0.6" />
         <path
@@ -304,50 +363,50 @@ export const OnboardingFlow: React.FC = () => {
           </div>
         </div>
 
-        {/* Top-Right Skip & Circular Next Button */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          {!isLastSlide && (
-            <button
-              type="button"
-              className="btn-auth-text"
-              onClick={handleComplete}
-              style={{
-                background: 'none',
-                border: 'none',
-                fontWeight: 700,
-                fontSize: '0.9375rem',
-                color: '#657785',
-                cursor: 'pointer',
-                padding: '0.5rem',
-                minHeight: 44,
-                minWidth: 44,
-              }}
-            >
-              Skip
-            </button>
-          )}
+        {/* Top-Right Log In & Navigation Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <button
+            type="button"
+            className="btn-auth-text"
+            onClick={handleNavigateToLogin}
+            aria-label="Log in to existing account"
+            style={{
+              background: '#ffffff',
+              border: '1px solid #E2E8F0',
+              borderRadius: '12px',
+              fontWeight: 700,
+              fontSize: '0.875rem',
+              color: '#083B56',
+              cursor: 'pointer',
+              padding: '0.45rem 0.9rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+              boxShadow: '0 2px 6px rgba(8, 59, 86, 0.05)',
+              minHeight: 38,
+            }}
+          >
+            <LogIn size={15} color="#F06543" />
+            <span>Log In</span>
+          </button>
 
           {!isLastSlide && (
             <button
               type="button"
-              onClick={handleNext}
-              aria-label="Next slide"
+              className="btn-auth-text"
+              onClick={handleNavigateToLogin}
               style={{
-                width: 44,
-                height: 44,
-                borderRadius: '50%',
-                background: '#083B56',
-                color: '#ffffff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                background: 'none',
                 border: 'none',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#657785',
                 cursor: 'pointer',
-                boxShadow: '0 6px 16px rgba(8, 59, 86, 0.3)',
-                transition: 'transform 0.15s ease',
+                padding: '0.45rem 0.6rem',
+                minHeight: 38,
               }}
             >
-              <ArrowRight size={20} strokeWidth={2.5} />
+              Skip
             </button>
           )}
         </div>
@@ -358,6 +417,10 @@ export const OnboardingFlow: React.FC = () => {
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
         style={{
           flex: 1,
           display: 'flex',
@@ -370,8 +433,66 @@ export const OnboardingFlow: React.FC = () => {
           boxSizing: 'border-box',
           position: 'relative',
           zIndex: 10,
+          cursor: isDragging ? 'grabbing' : 'grab',
         }}
       >
+        {/* Desktop Prev / Next Navigation Arrows */}
+        {currentSlideIndex > 0 && (
+          <button
+            type="button"
+            onClick={handlePrev}
+            aria-label="Previous slide"
+            style={{
+              position: 'absolute',
+              left: 4,
+              top: '38%',
+              transform: 'translateY(-50%)',
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              background: 'rgba(255, 255, 255, 0.9)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              border: '1px solid #E2E8F0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              zIndex: 30,
+              color: '#083B56',
+            }}
+          >
+            <ChevronLeft size={20} />
+          </button>
+        )}
+
+        {!isLastSlide && (
+          <button
+            type="button"
+            onClick={handleNext}
+            aria-label="Next slide"
+            style={{
+              position: 'absolute',
+              right: 4,
+              top: '38%',
+              transform: 'translateY(-50%)',
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              background: 'rgba(255, 255, 255, 0.9)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              border: '1px solid #E2E8F0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              zIndex: 30,
+              color: '#083B56',
+            }}
+          >
+            <ChevronRight size={20} />
+          </button>
+        )}
+
         {/* Horizontal Track for Smooth Carousel Slide Transition */}
         <div
           style={{
@@ -421,6 +542,7 @@ export const OnboardingFlow: React.FC = () => {
                     background: '#F06543',
                     zIndex: 1,
                   }}
+                  aria-hidden="true"
                 />
 
                 {/* Hero Image Container */}
@@ -544,6 +666,7 @@ export const OnboardingFlow: React.FC = () => {
                       'linear-gradient(90deg, #F06543 0%, rgba(240, 101, 67, 0) 100%)',
                     borderRadius: '1px',
                   }}
+                  aria-hidden="true"
                 />
               </div>
 
@@ -584,7 +707,7 @@ export const OnboardingFlow: React.FC = () => {
         </div>
       </main>
 
-      {/* ── Footer Bar: Left Pagination & Right Circular Floating Action Button ── */}
+      {/* ── Footer Bar: Left Pagination & Right Action Controls ── */}
       <footer
         style={{
           padding:
@@ -616,6 +739,12 @@ export const OnboardingFlow: React.FC = () => {
                   transition: 'all 0.35s cubic-bezier(0.25, 1, 0.5, 1)',
                   cursor: 'pointer',
                 }}
+                role="button"
+                tabIndex={0}
+                aria-label={`Go to slide ${idx + 1}`}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setCurrentSlideIndex(idx);
+                }}
               />
             );
           })}
@@ -628,8 +757,8 @@ export const OnboardingFlow: React.FC = () => {
             onClick={handleNext}
             aria-label="Next Slide"
             style={{
-              width: 56,
-              height: 56,
+              width: 54,
+              height: 54,
               borderRadius: '50%',
               background: '#F06543',
               color: '#ffffff',
@@ -645,30 +774,56 @@ export const OnboardingFlow: React.FC = () => {
             <ArrowRight size={24} strokeWidth={2.8} />
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={handleComplete}
-            style={{
-              padding: '0.875rem 1.5rem',
-              minHeight: '52px',
-              borderRadius: '18px',
-              background: '#F06543',
-              color: '#ffffff',
-              fontSize: '1rem',
-              fontWeight: 800,
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.5rem',
-              boxShadow: '0 8px 24px rgba(240, 101, 67, 0.4)',
-              transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-            }}
-          >
-            <span>Get Started</span>
-            <ChevronRight size={20} strokeWidth={2.8} />
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={handleNavigateToActivation}
+              style={{
+                padding: '0.85rem 1.25rem',
+                minHeight: '48px',
+                borderRadius: '16px',
+                background: '#F06543',
+                color: '#ffffff',
+                fontSize: '0.9375rem',
+                fontWeight: 800,
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.4rem',
+                boxShadow: '0 8px 24px rgba(240, 101, 67, 0.4)',
+                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+              }}
+            >
+              <KeyRound size={18} strokeWidth={2.5} />
+              <span>Activate</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleNavigateToLogin}
+              style={{
+                padding: '0.85rem 1.25rem',
+                minHeight: '48px',
+                borderRadius: '16px',
+                background: '#083B56',
+                color: '#ffffff',
+                fontSize: '0.9375rem',
+                fontWeight: 800,
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.4rem',
+                boxShadow: '0 8px 24px rgba(8, 59, 86, 0.3)',
+                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+              }}
+            >
+              <LogIn size={18} strokeWidth={2.5} />
+              <span>Login</span>
+            </button>
+          </div>
         )}
       </footer>
     </div>

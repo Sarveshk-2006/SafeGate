@@ -1038,3 +1038,47 @@ DROP TRIGGER IF EXISTS trg_child_alerts_actor_tenant ON child_safety_alerts;
 CREATE TRIGGER trg_child_alerts_actor_tenant
     BEFORE INSERT OR UPDATE ON child_safety_alerts
     FOR EACH ROW EXECUTE FUNCTION enforce_child_safety_actor_tenant('reported_by_id', 'acknowledged_by_id', 'resolved_by_id');
+
+-- ==============================================================================
+-- 15. INVITATIONS & ACCOUNT ACTIVATION (PHASE 4.8)
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS invitations (
+    id VARCHAR(64) PRIMARY KEY,
+    society_id VARCHAR(64) NOT NULL REFERENCES societies(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    role user_role NOT NULL DEFAULT 'resident',
+    resident_id VARCHAR(64) REFERENCES residents(id) ON DELETE SET NULL,
+    flat_id VARCHAR(64) REFERENCES flats(id) ON DELETE SET NULL,
+    token_hash VARCHAR(128) NOT NULL UNIQUE,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    delivery_status VARCHAR(32) DEFAULT 'QUEUED',
+    delivery_error TEXT,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
+    sent_at TIMESTAMPTZ,
+    accepted_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    resend_count INT DEFAULT 0,
+    last_resent_at TIMESTAMPTZ,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitations_token_hash ON invitations(token_hash);
+CREATE INDEX IF NOT EXISTS idx_invitations_society_email ON invitations(society_id, email);
+CREATE INDEX IF NOT EXISTS idx_invitations_resident_id ON invitations(resident_id);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    token_hash VARCHAR(128) NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
+

@@ -1,6 +1,6 @@
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { MobileAppShell } from '../mobile/MobileAppShell';
-import { LayoutDashboard, Settings, Hammer, ClipboardList, Users, Bell, Wrench, CheckSquare } from 'lucide-react';
+import { LayoutDashboard, Settings, Hammer, ClipboardList, Users, Bell, Wrench, CheckSquare, User } from 'lucide-react';
 
 const DRAWER_NAV = [
   { label: 'Overview', path: '/facility', icon: LayoutDashboard },
@@ -9,13 +9,14 @@ const DRAWER_NAV = [
   { label: 'AMC Contracts', path: '/facility/amc', icon: ClipboardList },
   { label: 'Cleaning Ops', path: '/facility/cleaning', icon: Hammer },
   { label: 'Utilities', path: '/facility/utilities', icon: Settings },
+  { label: 'Profile', path: '/facility/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [
   { label: 'Home', path: '/facility', icon: LayoutDashboard },
   { label: 'Tasks', path: '/facility/tasks', icon: CheckSquare },
   { label: 'Maintenance', path: '/facility/maintenance', icon: Wrench },
-  { label: 'Profile', path: '/facility/profile', icon: Users },
+  { label: 'Profile', path: '/facility/profile', icon: User },
 ];
 
 export const FacilityManagerLayout = () => {

@@ -17,7 +17,12 @@ import {
   Mail,
   Home,
   Check,
-  AlertCircle
+  AlertCircle,
+  Send,
+  RefreshCw,
+  Ban,
+  Clock,
+  Loader2
 } from 'lucide-react';
 import { societyService } from '../../../services/societyService';
 import { realtimeService } from '../../../services/realtimeService';
@@ -73,6 +78,19 @@ export const ResidentManagementPage: React.FC = () => {
   const [formVendorCategory, setFormVendorCategory] = useState('Technical AMC');
   const [formCommitteeDesignation, setFormCommitteeDesignation] = useState('Treasurer');
   const [formCustomPassword, setFormCustomPassword] = useState('');
+  const [provisionMode, setProvisionMode] = useState<'INVITE' | 'DIRECT_PASSWORD'>('INVITE');
+
+  // Account Invitation Management States (Phase 4.8)
+  const [inviteStatuses, setInviteStatuses] = useState<Record<string, {
+    status: 'NOT_INVITED' | 'PENDING' | 'ACCEPTED' | 'ACTIVATED' | 'EXPIRED' | 'REVOKED' | 'DELIVERY_FAILED';
+    invitationId?: string;
+    email?: string;
+    sentAt?: string;
+    expiresAt?: string;
+    resendCount?: number;
+  }>>({});
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{ id: string; type: 'success' | 'error'; message: string } | null>(null);
 
   // Committee list with persistence
   const [committeeList, setCommitteeList] = useState<UnifiedUserItem[]>(() => {
@@ -107,14 +125,101 @@ export const ResidentManagementPage: React.FC = () => {
   });
 
   // Data
-  const [residents, setResidents] = useState<Resident[]>([]);
-  const [staffList, setStaffList] = useState<Staff[]>([]);
-  const [vendorList, setVendorList] = useState<Vendor[]>([]);
+  const [residents, setResidents] = useState<Resident[]>(() => societyService.getResidents(currentSocietyId));
+  const [staffList, setStaffList] = useState<Staff[]>(() => societyService.getStaff(currentSocietyId));
+  const [vendorList, setVendorList] = useState<Vendor[]>(() => societyService.getVendors(currentSocietyId));
+
+  const fetchInvitationStatuses = async (residentList: Resident[]) => {
+    const statuses: Record<string, any> = {};
+    for (const r of residentList) {
+      try {
+        const res = await apiClient.getResidentInvitationStatus(r.id);
+        if (res && res.status) {
+          statuses[r.id] = res;
+        } else {
+          statuses[r.id] = { status: 'NOT_INVITED' };
+        }
+      } catch {
+        statuses[r.id] = { status: 'NOT_INVITED' };
+      }
+    }
+    setInviteStatuses((prev) => ({ ...prev, ...statuses }));
+  };
 
   const reloadData = () => {
-    setResidents(societyService.getResidents(currentSocietyId));
+    const res = societyService.getResidents(currentSocietyId);
+    setResidents(res);
     setStaffList(societyService.getStaff(currentSocietyId));
     setVendorList(societyService.getVendors(currentSocietyId));
+    fetchInvitationStatuses(res);
+  };
+
+  const handleSendInvite = async (residentId: string, email?: string) => {
+    setActionLoadingId(residentId);
+    setActionFeedback(null);
+    try {
+      const res = await apiClient.inviteResident(residentId, email);
+      setActionFeedback({ id: residentId, type: 'success', message: res?.message || 'Invitation sent!' });
+      setInviteStatuses((prev) => ({
+        ...prev,
+        [residentId]: {
+          status: 'PENDING',
+          invitationId: res?.invitationId,
+          expiresAt: res?.expiresAt,
+          sentAt: new Date().toISOString(),
+          email,
+        },
+      }));
+    } catch (err: any) {
+      setActionFeedback({ id: residentId, type: 'error', message: err?.message || 'Failed to send invitation.' });
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleResendInvite = async (residentId: string) => {
+    setActionLoadingId(residentId);
+    setActionFeedback(null);
+    try {
+      const res = await apiClient.resendResidentInvite(residentId);
+      setActionFeedback({ id: residentId, type: 'success', message: res?.message || 'Invitation resent!' });
+      setInviteStatuses((prev) => ({
+        ...prev,
+        [residentId]: {
+          ...(prev[residentId] || {}),
+          status: 'PENDING',
+          expiresAt: res?.expiresAt,
+          resendCount: res?.resendCount,
+        },
+      }));
+    } catch (err: any) {
+      setActionFeedback({ id: residentId, type: 'error', message: err?.message || 'Failed to resend invitation.' });
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleRevokeInvite = async (residentId: string) => {
+    if (!window.confirm('Are you sure you want to revoke this invitation? The resident will not be able to activate using the existing link.')) {
+      return;
+    }
+    setActionLoadingId(residentId);
+    setActionFeedback(null);
+    try {
+      const res = await apiClient.revokeResidentInvite(residentId);
+      setActionFeedback({ id: residentId, type: 'success', message: res?.message || 'Invitation revoked.' });
+      setInviteStatuses((prev) => ({
+        ...prev,
+        [residentId]: {
+          ...(prev[residentId] || {}),
+          status: 'REVOKED',
+        },
+      }));
+    } catch (err: any) {
+      setActionFeedback({ id: residentId, type: 'error', message: err?.message || 'Failed to revoke invitation.' });
+    } finally {
+      setActionLoadingId(null);
+    }
   };
 
   useEffect(() => {
@@ -209,20 +314,30 @@ export const ResidentManagementPage: React.FC = () => {
 
   const handleProvisionUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formName.trim() || !formEmail.trim() || !formPhone.trim() || !formCustomPassword.trim()) {
-      setProvisionError('Name, email, phone number, and password are all required.');
+    const isInviteMode = formRole === 'resident' && provisionMode === 'INVITE';
+
+    if (!formName.trim() || !formEmail.trim() || !formPhone.trim()) {
+      setProvisionError('Name, email, and phone number are all required.');
       return;
     }
-    if (formCustomPassword.trim().length < 8) {
-      setProvisionError('Password must be at least 8 characters long.');
-      return;
+    if (!isInviteMode) {
+      if (!formCustomPassword.trim()) {
+        setProvisionError('Password is required for manual credential creation.');
+        return;
+      }
+      if (formCustomPassword.trim().length < 8) {
+        setProvisionError('Password must be at least 8 characters long.');
+        return;
+      }
     }
 
     setIsSubmitting(true);
     setProvisionError(null);
 
     try {
-      const userPassword = formCustomPassword.trim();
+      const userPassword = isInviteMode
+        ? `Dw!${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 6).toUpperCase()}!`
+        : formCustomPassword.trim();
       
       let assignmentText = formFlatNumber;
       if (formRole === 'guard') assignmentText = formGate;
@@ -250,7 +365,7 @@ export const ResidentManagementPage: React.FC = () => {
 
       // 2. Synchronize Local Domain Repositories
       if (formRole === 'resident') {
-        societyService.createResident(
+        const createdRes = societyService.createResident(
           {
             societyId: currentSocietyId,
             name: formName.trim(),
@@ -264,6 +379,24 @@ export const ResidentManagementPage: React.FC = () => {
           },
           { id: 'sec-1', name: 'Secretary', role: 'secretary' }
         );
+
+        if (isInviteMode) {
+          try {
+            const invRes = await apiClient.inviteResident(createdRes.id, formEmail.trim());
+            setInviteStatuses((prev) => ({
+              ...prev,
+              [createdRes.id]: {
+                status: 'PENDING',
+                invitationId: invRes?.invitationId,
+                expiresAt: invRes?.expiresAt,
+                sentAt: new Date().toISOString(),
+                email: formEmail.trim(),
+              },
+            }));
+          } catch (invErr: any) {
+            console.warn('Auto invitation delivery notice:', invErr);
+          }
+        }
       } else if (formRole === 'guard') {
         societyService.createStaff(
           {
@@ -329,7 +462,9 @@ export const ResidentManagementPage: React.FC = () => {
         email: formEmail.trim(),
         role: formRole.toUpperCase(),
         assignment: assignmentText,
-        temporaryPassword: userPassword,
+        temporaryPassword: isInviteMode
+          ? 'Secure Activation Email Dispatched (Resident sets password on activation)'
+          : userPassword,
       });
 
       // Reset Form
@@ -338,6 +473,7 @@ export const ResidentManagementPage: React.FC = () => {
       setFormEmail('');
       setFormPhone('');
       setFormCustomPassword('');
+      setProvisionMode('INVITE');
       reloadData();
     } catch (err: any) {
       setProvisionError(err?.message || 'Failed to provision user. Please check server connection.');
@@ -647,6 +783,258 @@ export const ResidentManagementPage: React.FC = () => {
                     <span>{u.phone}</span>
                   </div>
                 </div>
+
+                {/* ── Resident Account Invitation Management (Phase 4.8) ── */}
+                {u.role === 'resident' && (
+                  <div
+                    style={{
+                      background: '#F8FAFC',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '10px',
+                      padding: '0.625rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.45rem',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 600 }}>Email Invitation:</span>
+                      {(() => {
+                        const inv = inviteStatuses[u.id];
+                        const status = inv?.status || 'NOT_INVITED';
+                        switch (status) {
+                          case 'ACTIVATED':
+                          case 'ACCEPTED':
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '0.6875rem',
+                                  fontWeight: 700,
+                                  color: '#059669',
+                                  background: '#ECFDF5',
+                                  border: '1px solid #A7F3D0',
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '9999px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.25rem',
+                                }}
+                              >
+                                <Check size={11} strokeWidth={3} /> Activated
+                              </span>
+                            );
+                          case 'PENDING':
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '0.6875rem',
+                                  fontWeight: 700,
+                                  color: '#D97706',
+                                  background: '#FEF3C7',
+                                  border: '1px solid #FDE68A',
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '9999px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.25rem',
+                                }}
+                              >
+                                <Clock size={11} /> Invite Pending
+                              </span>
+                            );
+                          case 'EXPIRED':
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '0.6875rem',
+                                  fontWeight: 700,
+                                  color: '#DC2626',
+                                  background: '#FEF2F2',
+                                  border: '1px solid #FECACA',
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '9999px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.25rem',
+                                }}
+                              >
+                                <AlertCircle size={11} /> Expired
+                              </span>
+                            );
+                          case 'REVOKED':
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '0.6875rem',
+                                  fontWeight: 700,
+                                  color: '#64748B',
+                                  background: '#F1F5F9',
+                                  border: '1px solid #CBD5E1',
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '9999px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.25rem',
+                                }}
+                              >
+                                <Ban size={11} /> Revoked
+                              </span>
+                            );
+                          case 'DELIVERY_FAILED':
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '0.6875rem',
+                                  fontWeight: 700,
+                                  color: '#DC2626',
+                                  background: '#FEF2F2',
+                                  border: '1px solid #FECACA',
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '9999px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.25rem',
+                                }}
+                              >
+                                <AlertCircle size={11} /> Delivery Failed
+                              </span>
+                            );
+                          case 'NOT_INVITED':
+                          default:
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '0.6875rem',
+                                  fontWeight: 700,
+                                  color: '#475569',
+                                  background: '#F1F5F9',
+                                  border: '1px solid #E2E8F0',
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '9999px',
+                                }}
+                              >
+                                Not Invited
+                              </span>
+                            );
+                        }
+                      })()}
+                    </div>
+
+                    {/* Action Feedback Notification */}
+                    {actionFeedback && actionFeedback.id === u.id && (
+                      <div
+                        style={{
+                          fontSize: '0.6875rem',
+                          padding: '0.35rem 0.5rem',
+                          borderRadius: '6px',
+                          background: actionFeedback.type === 'success' ? '#ECFDF5' : '#FEF2F2',
+                          color: actionFeedback.type === 'success' ? '#065F46' : '#991B1B',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.3rem',
+                        }}
+                      >
+                        {actionFeedback.type === 'success' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                        <span>{actionFeedback.message}</span>
+                      </div>
+                    )}
+
+                    {/* Invitation Action Buttons */}
+                    <div style={{ marginTop: '0.2rem' }}>
+                      {(() => {
+                        const inv = inviteStatuses[u.id];
+                        const status = inv?.status || 'NOT_INVITED';
+                        const isLoading = actionLoadingId === u.id;
+
+                        if (status === 'ACTIVATED' || status === 'ACCEPTED') {
+                          return (
+                            <span style={{ fontSize: '0.725rem', color: '#059669', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              <CheckCircle2 size={13} /> Active & Configured
+                            </span>
+                          );
+                        }
+
+                        if (status === 'PENDING') {
+                          return (
+                            <div style={{ display: 'flex', gap: '0.4rem', width: '100%' }}>
+                              <button
+                                type="button"
+                                disabled={isLoading}
+                                onClick={() => handleResendInvite(u.id)}
+                                style={{
+                                  flex: 1,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '0.3rem',
+                                  padding: '0.35rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  background: '#F0F9FF',
+                                  color: '#0284C7',
+                                  border: '1px solid #BAE6FD',
+                                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                {isLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                                <span>Resend</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isLoading}
+                                onClick={() => handleRevokeInvite(u.id)}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '0.3rem',
+                                  padding: '0.35rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  background: '#FEF2F2',
+                                  color: '#DC2626',
+                                  border: '1px solid #FECACA',
+                                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                <Ban size={11} />
+                                <span>Revoke</span>
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <button
+                            type="button"
+                            disabled={isLoading}
+                            onClick={() => handleSendInvite(u.id, u.email)}
+                            style={{
+                              width: '100%',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '0.35rem',
+                              padding: '0.4rem 0.6rem',
+                              borderRadius: '6px',
+                              fontSize: '0.725rem',
+                              fontWeight: 700,
+                              background: 'var(--aarizo-navy, #083B56)',
+                              color: '#ffffff',
+                              border: 'none',
+                              cursor: isLoading ? 'not-allowed' : 'pointer',
+                            }}
+                          >
+                            {isLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                            <span>{status === 'EXPIRED' ? 'Resend Invitation' : 'Send Invite'}</span>
+                          </button>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid #F1F5F9', paddingTop: '0.5rem' }}>
                   <span style={{ fontSize: '0.6875rem', color: u.status === 'ACTIVE' ? '#16A34A' : '#DC2626', fontWeight: 700 }}>
@@ -1006,26 +1394,89 @@ export const ResidentManagementPage: React.FC = () => {
                 </div>
               )}
 
-              <div>
-                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
-                  Login Password (Min. 8 characters) *
-                </label>
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  placeholder="Enter password for user login"
-                  value={formCustomPassword}
-                  onChange={(e) => setFormCustomPassword(e.target.value)}
+              {/* Resident Onboarding Mode Selection (Phase 4.8) */}
+              {formRole === 'resident' && (
+                <div
                   style={{
-                    width: '100%',
-                    padding: '0.55rem 0.75rem',
-                    borderRadius: '8px',
-                    border: '1px solid #CBD5E1',
-                    fontSize: '0.8125rem',
+                    background: '#F8FAFC',
+                    border: '1px solid #E2E8F0',
+                    borderRadius: '10px',
+                    padding: '0.75rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.4rem',
                   }}
-                />
-              </div>
+                >
+                  <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#334155' }}>
+                    Account Activation Mode *
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => setProvisionMode('INVITE')}
+                      style={{
+                        padding: '0.5rem 0.4rem',
+                        borderRadius: '8px',
+                        fontSize: '0.75rem',
+                        fontWeight: provisionMode === 'INVITE' ? 700 : 500,
+                        background: provisionMode === 'INVITE' ? 'var(--aarizo-navy, #083B56)' : '#FFFFFF',
+                        color: provisionMode === 'INVITE' ? '#FFFFFF' : '#334155',
+                        border: `1px solid ${provisionMode === 'INVITE' ? 'var(--aarizo-navy, #083B56)' : '#CBD5E1'}`,
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                      }}
+                    >
+                      ✉️ Email Invite (Recommended)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProvisionMode('DIRECT_PASSWORD')}
+                      style={{
+                        padding: '0.5rem 0.4rem',
+                        borderRadius: '8px',
+                        fontSize: '0.75rem',
+                        fontWeight: provisionMode === 'DIRECT_PASSWORD' ? 700 : 500,
+                        background: provisionMode === 'DIRECT_PASSWORD' ? 'var(--aarizo-navy, #083B56)' : '#FFFFFF',
+                        color: provisionMode === 'DIRECT_PASSWORD' ? '#FFFFFF' : '#334155',
+                        border: `1px solid ${provisionMode === 'DIRECT_PASSWORD' ? 'var(--aarizo-navy, #083B56)' : '#CBD5E1'}`,
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                      }}
+                    >
+                      🔑 Set Direct Password
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '0.7rem', color: '#64748B', margin: '0.1rem 0 0' }}>
+                    {provisionMode === 'INVITE'
+                      ? 'An email invitation with a secure 7-day link will be sent to the resident. They will choose their own password upon activation.'
+                      : 'Set a temporary password now and manually share credentials with the resident.'}
+                  </p>
+                </div>
+              )}
+
+              {/* Password Input (Hidden in Invite Mode for Residents) */}
+              {(formRole !== 'resident' || provisionMode === 'DIRECT_PASSWORD') && (
+                <div>
+                  <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
+                    Login Password (Min. 8 characters) *
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    placeholder="Enter password for user login"
+                    value={formCustomPassword}
+                    onChange={(e) => setFormCustomPassword(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '0.55rem 0.75rem',
+                      borderRadius: '8px',
+                      border: '1px solid #CBD5E1',
+                      fontSize: '0.8125rem',
+                    }}
+                  />
+                </div>
+              )}
 
               <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
                 <button
@@ -1060,7 +1511,11 @@ export const ResidentManagementPage: React.FC = () => {
                     cursor: isSubmitting ? 'not-allowed' : 'pointer',
                   }}
                 >
-                  {isSubmitting ? 'Provisioning Atomic Account...' : 'Provision User & Issue Password'}
+                  {isSubmitting
+                    ? 'Provisioning Atomic Account...'
+                    : formRole === 'resident' && provisionMode === 'INVITE'
+                    ? 'Send Invite & Provision'
+                    : 'Provision User & Issue Password'}
                 </button>
               </div>
             </form>
