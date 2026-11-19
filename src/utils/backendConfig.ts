@@ -21,8 +21,8 @@ export const getBackendBaseUrl = (): string => {
 
     // 3. Native Capacitor Android/iOS Environment
     if ((window as any).Capacitor?.isNativePlatform?.()) {
-      // Android WebView connects to host machine via 10.0.2.2 in emulator or standard loopback
-      return 'http://10.0.2.2:5000';
+      // Connect to production hosted backend on physical Android devices
+      return 'https://safegate-chi.vercel.app';
     }
 
     // 4. Local Vite Dev Server
