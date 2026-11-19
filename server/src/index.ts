@@ -1,3 +1,4 @@
+import './env.js';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -6,24 +7,69 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { prisma } from './prisma.js';
-import { timingSafeCompare } from './crypto.js';
+import {
+  timingSafeCompare,
+  verifyPasswordAsync,
+  needsRehash,
+  hashPasswordScryptAsync,
+  generateSalt,
+} from './crypto.js';
 import { UniversalProvisioningService } from './provisioning.js';
-import { realtimeEngine } from './realtimeEngine.js';
+import {
+  realtimeEngine,
+  handleSseSubscription,
+  EventAudiencePolicy,
+  isSensitiveEventType,
+} from './realtimeEngine.js';
 import { TrustScoreService } from './services/trustScoreService.js';
 import { WalletService } from './services/walletService.js';
 import { FederationMarketplaceService } from './services/federationMarketplaceService.js';
 import { AIGovernancePolicyEngine } from './aiGovernance.js';
+import { childSafetyRouter } from './childSafety/router.js';
 import {
+  authenticateToken,
   authenticateFirebaseToken,
+  generateAuthToken,
+  validateAuthConfiguration,
   requireRole,
   requireSocietyMembership,
   rateLimiter,
+  loginRateLimiter,
+  authConcurrencyLimiter,
 } from './auth.js';
+import {
+  validateDatabaseConfiguration,
+  assertDatabaseConfiguration,
+  checkDatabaseReadiness,
+  sanitizeErrorMessage,
+  redactSensitiveData,
+} from './dbConfig.js';
+import { registerGracefulShutdown } from './shutdown.js';
 
-dotenv.config();
+validateAuthConfiguration();
+if (process.env.NODE_ENV !== 'test') {
+  assertDatabaseConfiguration();
+}
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentDir = (() => {
+  try {
+    if (typeof __dirname !== 'undefined') {
+      return __dirname;
+    }
+  } catch {
+    // __dirname is undefined in native ESM
+  }
+  try {
+    const getImportMetaUrl = new Function('return import.meta.url');
+    const metaUrl = getImportMetaUrl();
+    if (metaUrl) {
+      return path.dirname(fileURLToPath(metaUrl));
+    }
+  } catch {
+    // Fallback if dynamic import.meta evaluation fails
+  }
+  return process.cwd();
+})();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -39,8 +85,20 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+// Response interceptor: automatically sanitizes 500 error responses to prevent internal schema/path leaks
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  const originalJson = res.json.bind(res);
+  res.json = (body: any): Response => {
+    if (res.statusCode >= 500 && body && typeof body === 'object' && body.error) {
+      body.error = sanitizeErrorMessage(body.error);
+    }
+    return originalJson(body);
+  };
+  next();
+});
+
 // Static uploads directory with automated initialization
-const uploadsDir = path.resolve(__dirname, '../uploads');
+const uploadsDir = path.resolve(currentDir, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -49,11 +107,45 @@ app.use('/uploads', express.static(uploadsDir));
 // Apply global rate limiting
 app.use(rateLimiter(200, 60000));
 
-// Multi-tenant contextual headers middleware (with fallback for testing)
+// Explicit public endpoint allowlist for unauthenticated API requests
+const isPublicApiRoute = (req: Request): boolean => {
+  const url = (req.originalUrl || req.url || '').split('?')[0];
+  const method = req.method.toUpperCase();
+
+  if (
+    method === 'GET' &&
+    (url === '/api/health' ||
+      url === '/api/health/live' ||
+      url === '/api/health/ready' ||
+      url === '/api/realtime/health')
+  ) {
+    return true;
+  }
+  if (method === 'POST' && url === '/api/auth/login') {
+    return true;
+  }
+  if (method === 'POST' && url === '/api/payments/razorpay/webhook') {
+    return true;
+  }
+
+  return false;
+};
+
+// Mount authoritative Bearer authentication middleware across all protected API routes
+app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+  if (isPublicApiRoute(req)) {
+    return next();
+  }
+  return authenticateToken(req, res, next);
+});
+
+// Multi-tenant contextual security middleware:
+// Client-supplied identity headers (x-user-role, x-user-id, x-society-id) are NEVER trusted as proof of identity or authorization.
+// Identity, roles, and tenant context are strictly resolved by authentication middleware from verified credentials.
 app.use((req: Request, _res: Response, next: NextFunction) => {
-  req.societyId = (req.headers['x-society-id'] as string) || undefined;
-  req.userId = (req.headers['x-user-id'] as string) || undefined;
-  req.userRole = (req.headers['x-user-role'] as string)?.toLowerCase() || undefined;
+  req.societyId = req.authContext?.societyId;
+  req.userId = req.authContext?.userId;
+  req.userRole = req.authContext?.role;
   next();
 });
 
@@ -68,13 +160,49 @@ declare global {
   }
 }
 
-// Health check
-app.get('/api/health', (_req: Request, res: Response) => {
+// Health & Diagnostics Endpoints
+
+// 1. Process Liveness (independent of database reachability)
+app.get('/api/health/live', (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// 2. Database Readiness (probes PostgreSQL with timeout)
+app.get('/api/health/ready', async (_req: Request, res: Response) => {
+  const readiness = await checkDatabaseReadiness(prisma, 2000);
+  if (readiness.ready) {
+    return res.json({
+      status: 'READY',
+      database: 'CONNECTED',
+      latencyMs: readiness.latencyMs,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return res.status(503).json({
+    status: 'NOT_READY',
+    database: 'DISCONNECTED',
+    error: readiness.error || 'Database connection check failed.',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// 3. Backward-compatible combined health check
+app.get('/api/health', async (_req: Request, res: Response) => {
+  const readiness = await checkDatabaseReadiness(prisma, 2000);
+  const isHealthy = readiness.ready;
+  const statusCode = isHealthy ? 200 : 503;
+
+  res.status(statusCode).json({
+    status: isHealthy ? 'UP' : 'DEGRADED',
+    database: isHealthy ? 'CONNECTED' : 'DISCONNECTED',
     engine: 'Node.js + Express + Prisma + PostgreSQL',
     timestamp: new Date().toISOString(),
     sseClientsCount: realtimeEngine.getActiveConnectionCount(),
+    ...(readiness.latencyMs !== undefined ? { latencyMs: readiness.latencyMs } : {}),
   });
 });
 
@@ -83,35 +211,137 @@ app.get('/api/health', (_req: Request, res: Response) => {
 // ==========================================
 
 // SSE Subscription endpoint for mobile APKs and web dashboards
-app.get('/api/realtime/stream', (req: Request, res: Response) => {
-  const societyId = (req.query.societyId as string) || req.societyId || 'soc-gvs';
-  const userId = (req.query.userId as string) || req.userId;
-  const role = (req.query.role as string) || req.userRole || 'resident';
-  const lastEventId = (req.headers['last-event-id'] as string) || (req.query.lastEventId as string);
-  const clientId = `client_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+app.get('/api/realtime/stream', handleSseSubscription);
 
-  realtimeEngine.registerClient(clientId, res, societyId, userId, role, lastEventId);
-});
+// F-B22-02A: Strict allowlist for client-initiated /api/realtime/broadcast events
+const BROADCAST_EVENT_TYPE_REGEX = /^[A-Z][A-Z0-9_]{1,63}$/;
+const BROADCAST_FORBIDDEN_METADATA_KEYS = new Set([
+  '_audience',
+  'audience',
+  'allowedRoles',
+  'targetUserIds',
+  'actorId',
+  'senderRole',
+  'senderName',
+]);
+const BROADCAST_ROLE_EVENT_PREFIXES: Record<string, readonly string[]> = {
+  admin: ['GENERAL', 'ANNOUNCEMENT_', 'COMMUNITY_', 'NOTICE_', 'POLL_', 'MAINTENANCE_', 'FACILITY_', 'HOUSEKEEPING_', 'SYNC_PING'],
+  secretary: ['GENERAL', 'ANNOUNCEMENT_', 'COMMUNITY_', 'NOTICE_', 'POLL_', 'MAINTENANCE_', 'FACILITY_', 'HOUSEKEEPING_', 'SYNC_PING'],
+  committee: ['GENERAL', 'ANNOUNCEMENT_', 'COMMUNITY_', 'NOTICE_', 'POLL_', 'SYNC_PING'],
+  facility_manager: ['MAINTENANCE_', 'FACILITY_', 'HOUSEKEEPING_', 'UTILITY_', 'SYNC_PING'],
+  guard: ['GATE_OPERATIONAL_PING', 'SHIFT_HANDOVER_NOTE', 'PATROL_CHECKPOINT', 'SYNC_PING'],
+};
 
-// SSE Broadcast endpoint for cross-device events
+function isBroadcastEventAllowedForRole(role: string, eventType: string): boolean {
+  const prefixes = BROADCAST_ROLE_EVENT_PREFIXES[role];
+  if (!prefixes || prefixes.length === 0) return false;
+  return prefixes.some((p) => (p.endsWith('_') ? eventType.startsWith(p) : eventType === p));
+}
+
+// SSE Broadcast endpoint for authorized cross-device operational events (deny-by-default)
 app.post('/api/realtime/broadcast', async (req: Request, res: Response) => {
   try {
-    const { societyId, eventType, entityId, payload, topic, senderRole, senderName } = req.body;
-    const finalType = eventType || topic || 'GENERAL';
+    const authContext = req.authContext;
+    if (!authContext || !authContext.userId || !authContext.role) {
+      return res.status(401).json({ error: 'Unauthorized: Missing authentication context.', code: 'AUTH_REQUIRED' });
+    }
+
+    const callerRole = authContext.role.toLowerCase();
+    if (!BROADCAST_ROLE_EVENT_PREFIXES[callerRole]) {
+      return res.status(403).json({
+        error: `Forbidden: Role '${callerRole}' is not permitted to publish realtime broadcast events.`,
+        code: 'INSUFFICIENT_PERMISSIONS',
+      });
+    }
+
+    // Derive society strictly from verified authContext; never falls back to 'soc-gvs'
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    if (!tenant.societyId) {
+      return res.status(400).json({
+        error: 'A valid target societyId is required for platform-admin broadcasts.',
+        code: 'TARGET_SOCIETY_REQUIRED',
+      });
+    }
+
+    const body = req.body || {};
+    const rawEventType =
+      typeof body.eventType === 'string' && body.eventType.trim()
+        ? body.eventType.trim().toUpperCase()
+        : typeof body.topic === 'string' && body.topic.trim()
+          ? body.topic.trim().toUpperCase()
+          : '';
+
+    if (!rawEventType || !BROADCAST_EVENT_TYPE_REGEX.test(rawEventType)) {
+      return res.status(400).json({
+        error: 'A valid uppercase eventType or topic is required.',
+        code: 'INVALID_EVENT_TYPE',
+      });
+    }
+
+    // Protected Child Safety, Emergency, and Security event families MUST originate strictly from verified server workflows
+    if (isSensitiveEventType(rawEventType) || rawEventType.startsWith('GATE_PASS_')) {
+      return res.status(403).json({
+        error: `Forbidden: Protected event type '${rawEventType}' cannot be published via generic broadcast.`,
+        code: 'PROTECTED_EVENT_TYPE_FORBIDDEN',
+      });
+    }
+
+    if (!isBroadcastEventAllowedForRole(callerRole, rawEventType)) {
+      return res.status(403).json({
+        error: `Forbidden: Role '${callerRole}' is not authorized to publish event type '${rawEventType}'.`,
+        code: 'EVENT_TYPE_NOT_AUTHORIZED',
+      });
+    }
+
+    // Reject client-supplied authorization/audience metadata forgery attempts
+    const rawPayload = body.payload;
+    if (rawPayload !== undefined && (typeof rawPayload !== 'object' || rawPayload === null || Array.isArray(rawPayload))) {
+      return res.status(400).json({ error: 'payload must be a plain JSON object.', code: 'INVALID_PAYLOAD' });
+    }
+    if (body._audience !== undefined || body.audience !== undefined) {
+      return res.status(400).json({
+        error: 'Client-supplied event audience metadata is forbidden.',
+        code: 'FORBIDDEN_EVENT_METADATA',
+      });
+    }
+    const sanitizedPayload: Record<string, any> = {};
+    if (rawPayload && typeof rawPayload === 'object') {
+      for (const [k, v] of Object.entries(rawPayload)) {
+        if (BROADCAST_FORBIDDEN_METADATA_KEYS.has(k) || k === 'societyId') {
+          return res.status(400).json({
+            error: `Client-supplied internal event metadata field '${k}' is forbidden.`,
+            code: 'FORBIDDEN_EVENT_METADATA',
+          });
+        }
+        sanitizedPayload[k] = v;
+      }
+    }
+
+    const safeEntityId =
+      typeof body.entityId === 'string' && body.entityId.trim().length > 0 && body.entityId.trim().length <= 128
+        ? body.entityId.trim()
+        : `evt_${Date.now()}`;
+
     const eventId = await realtimeEngine.recordOutboxEvent({
-      societyId: societyId || req.societyId || 'soc-gvs',
-      eventType: finalType,
-      entityId: entityId || `evt_${Date.now()}`,
-      actorId: req.userId || senderName || 'system',
+      societyId: tenant.societyId,
+      eventType: rawEventType,
+      entityId: safeEntityId,
+      actorId: authContext.userId,
       payload: {
-        ...(payload || {}),
-        senderRole: senderRole || 'NETWORK',
-        senderName: senderName || 'Remote Node',
+        ...sanitizedPayload,
+        senderRole: callerRole,
+        senderName: authContext.name || 'Authenticated User',
       },
     });
-    res.json({ success: true, eventId, deliveredTo: realtimeEngine.getActiveConnectionCount(societyId) });
+    res.json({
+      success: true,
+      eventId,
+      societyId: tenant.societyId,
+      deliveredTo: realtimeEngine.getActiveConnectionCount(tenant.societyId),
+    });
   } catch (error: any) {
-    res.status(500).json({ error: error?.message });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
@@ -129,21 +359,34 @@ app.get('/api/realtime/health', (req: Request, res: Response) => {
 });
 
 // Internal event broadcaster helper routing through authoritative Transactional Outbox
-export async function broadcastEvent(topic: string, payload: any, societyId: string = 'soc-gvs') {
+export async function broadcastEvent(
+  topic: string,
+  payload: any,
+  societyId: string = 'soc-gvs',
+  audience?: EventAudiencePolicy
+) {
+  const { _audience: _dropped, ...safePayload } = (payload && typeof payload === 'object' ? payload : {}) as Record<string, any>;
   try {
     await realtimeEngine.recordOutboxEvent({
       societyId,
       eventType: topic,
-      entityId: payload?.id ? String(payload.id) : `evt_${Date.now()}`,
-      payload: payload || {},
+      entityId: safePayload?.id ? String(safePayload.id) : `evt_${Date.now()}`,
+      payload: safePayload,
+      audience,
     });
   } catch {
     // In-memory fallback if database outbox table write encounters transient error
-    realtimeEngine.broadcastToSociety(societyId, topic, {
-      ...payload,
-      timestamp: new Date().toISOString(),
-      fallbackMode: true,
-    });
+    realtimeEngine.broadcastToSociety(
+      societyId,
+      topic,
+      {
+        ...safePayload,
+        timestamp: new Date().toISOString(),
+        fallbackMode: true,
+      },
+      undefined,
+      audience
+    );
   }
 }
 
@@ -500,19 +743,163 @@ app.delete('/api/residents/:id', requireRole(['secretary', 'admin']), async (req
   }
 });
 
+// Helper: Normalize Prisma VisitorPass into combined relational + frontend compatible contract
+function normalizeVisitorPass(pass: any) {
+  if (!pass) return null;
+  const validUntilStr = pass.validTo instanceof Date ? pass.validTo.toISOString() : (pass.validTo || pass.validUntil || new Date(Date.now() + 86400000).toISOString());
+  const validFromStr = pass.validFrom instanceof Date ? pass.validFrom.toISOString() : (pass.validFrom || pass.createdAt || new Date().toISOString());
+  const checkedInAtStr = pass.checkInTime ? (pass.checkInTime instanceof Date ? pass.checkInTime.toISOString() : pass.checkInTime) : pass.checkedInAt;
+  const checkedOutAtStr = pass.checkOutTime ? (pass.checkOutTime instanceof Date ? pass.checkOutTime.toISOString() : pass.checkOutTime) : pass.checkedOutAt;
+
+  // Map backend PassStatus to frontend PassStatus
+  let frontendStatus = pass.status;
+  if (pass.status === 'PENDING') frontendStatus = 'EXPECTED';
+  else if (pass.status === 'CANCELLED') frontendStatus = 'REVOKED';
+
+  let frontendCategory = pass.passType || pass.category || 'GUEST';
+  if (frontendCategory === 'FREQUENT') frontendCategory = 'DOMESTIC_WORKER';
+  else if (frontendCategory === 'SERVICE') frontendCategory = 'SERVICE_PROVIDER';
+
+  const codeMatch = pass.qrCodeHash?.match(/GVS-\d+/)?.[0] || pass.id?.replace(/^pass-/, 'GVS-') || 'GVS-8492';
+
+  return {
+    ...pass,
+    // Canonical relational fields
+    id: pass.id,
+    societyId: pass.societyId,
+    residentId: pass.residentId || pass.resident?.id,
+    flatId: pass.flatId || pass.flat?.id,
+    visitorName: pass.visitorName,
+    phone: pass.phone,
+    passType: pass.passType,
+    vehicleNumber: pass.vehicleNumber || undefined,
+    purpose: pass.purpose || undefined,
+    status: pass.status,
+    qrCodeHash: pass.qrCodeHash || `COMMUNITYOS:${codeMatch}:${pass.societyId}`,
+    validFrom: validFromStr,
+    validTo: validUntilStr,
+    checkInTime: pass.checkInTime || undefined,
+    checkOutTime: pass.checkOutTime || undefined,
+    createdAt: pass.createdAt instanceof Date ? pass.createdAt.toISOString() : pass.createdAt,
+    updatedAt: pass.updatedAt instanceof Date ? pass.updatedAt.toISOString() : pass.updatedAt,
+    // Frontend compatibility aliases
+    visitorPhone: pass.phone || pass.visitorPhone,
+    category: frontendCategory,
+    passLifecycle: pass.passLifecycle || (pass.passType === 'FREQUENT' ? 'REUSABLE' : 'ONE_TIME'),
+    passCode: codeMatch,
+    qrDataString: pass.qrCodeHash || `COMMUNITYOS:${codeMatch}:${pass.societyId}`,
+    validUntil: validUntilStr,
+    usageCount: pass.status === 'CHECKED_IN' || pass.status === 'CHECKED_OUT' ? 1 : 0,
+    maxUsages: pass.passType === 'FREQUENT' ? 999 : 1,
+    flatCode: pass.flat?.flatNumber || pass.flatCode || 'B-1204',
+    towerName: pass.flat?.tower?.name || pass.towerName || 'Tower B',
+    residentName: pass.resident?.name || pass.residentName || 'Resident',
+    checkedInAt: checkedInAtStr,
+    checkedOutAt: checkedOutAtStr,
+    isOverdue: pass.status === 'EXPIRED' || (pass.status === 'CHECKED_IN' && new Date() > new Date(pass.validTo)),
+    lifecycleState: pass.status === 'CHECKED_IN' ? 'INSIDE' : pass.status === 'CHECKED_OUT' ? 'EXITED' : pass.status === 'CANCELLED' ? 'CANCELLED' : 'EXPECTED',
+  };
+}
+
+// Helper: Determine if authenticated user has universal platform-admin privileges
+function isPlatformAdmin(req: Request): boolean {
+  if (req.userRole !== 'admin') return false;
+  const socId = req.authContext?.societyId;
+  return !socId || socId === 'soc-platform' || socId === 'platform' || socId === '*';
+}
+
 // Visitor Passes
 app.get('/api/visitor-passes', requireRole(['resident', 'guard', 'secretary', 'admin', 'facility_manager']), async (req: Request, res: Response) => {
   try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    if (!isPlatform && req.query.societyId && String(req.query.societyId) !== req.societyId && req.query.societyId !== 'all') {
+      return res.status(403).json({ error: 'Access denied: Cannot query visitor passes of another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
     const limit = Math.min(Number(req.query.limit) || 100, 200);
     const offset = Number(req.query.offset) || 0;
+    const effectiveSocietyId = isPlatform && req.query.societyId ? String(req.query.societyId) : req.societyId;
+
+    const where: any = {};
+    if (effectiveSocietyId && effectiveSocietyId !== 'all') {
+      where.societyId = effectiveSocietyId;
+    }
+
+    // Role-based tenant & resident scoping: Resident must only access their own passes
+    if (req.userRole === 'resident') {
+      const linkedResident = await prisma.resident.findFirst({
+        where: { OR: [{ userId: req.userId }, { id: req.userId }] },
+      }).catch(() => null);
+
+      const residentIdMatches = [req.userId!];
+      if (linkedResident) residentIdMatches.push(linkedResident.id);
+
+      where.AND = [
+        ...(where.societyId ? [{ societyId: where.societyId }] : []),
+        {
+          OR: [
+            { residentId: { in: residentIdMatches } },
+            { resident: { userId: req.userId } },
+          ],
+        },
+      ];
+      delete where.societyId;
+    }
+
     const passes = await prisma.visitorPass.findMany({
-      where: req.societyId ? { societyId: req.societyId } : undefined,
+      where,
       orderBy: { validFrom: 'desc' },
       take: limit,
       skip: offset,
       include: { resident: true, flat: true },
     });
-    res.json(passes);
+
+    const normalized = passes.map(p => normalizeVisitorPass(p));
+    res.json(normalized);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/visitor-passes/:id', requireRole(['resident', 'guard', 'secretary', 'admin', 'facility_manager']), async (req: Request, res: Response) => {
+  try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    const id = String(req.params.id);
+    const pass = await prisma.visitorPass.findUnique({
+      where: { id },
+      include: { resident: true, flat: true },
+    });
+
+    if (!pass) {
+      return res.status(404).json({ error: 'Visitor pass not found', code: 'PASS_NOT_FOUND' });
+    }
+
+    // Fail-closed tenant isolation check
+    if (!isPlatform && (!req.societyId || pass.societyId !== req.societyId)) {
+      return res.status(403).json({ error: 'Access denied to visitor pass belonging to another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
+    // Resident ownership check
+    if (req.userRole === 'resident') {
+      const linkedResident = await prisma.resident.findFirst({
+        where: { OR: [{ userId: req.userId }, { id: req.userId }] },
+      }).catch(() => null);
+
+      const isOwner = pass.residentId === req.userId || pass.resident?.userId === req.userId || (linkedResident && pass.residentId === linkedResident.id);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied: You can only view your own visitor passes', code: 'UNAUTHORIZED_PASS_ACCESS' });
+      }
+    }
+
+    res.json(normalizeVisitorPass(pass));
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
@@ -520,26 +907,297 @@ app.get('/api/visitor-passes', requireRole(['resident', 'guard', 'secretary', 'a
 
 app.post('/api/visitor-passes', requireRole(['resident', 'guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    const body = req.body || {};
+    if (!isPlatform && body.societyId && String(body.societyId) !== req.societyId) {
+      return res.status(403).json({ error: 'Access denied: Cannot create passes for another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
+    const visitorName = String(body.visitorName || '').trim();
+    const phone = String(body.phone || body.visitorPhone || '').trim();
+
+    // 1. Mandatory field validation
+    if (!visitorName) {
+      return res.status(400).json({ error: 'Visitor name is required', code: 'INVALID_VISITOR_NAME' });
+    }
+    if (!phone || phone.length < 4) {
+      return res.status(400).json({ error: 'Valid visitor phone number is required', code: 'INVALID_PHONE' });
+    }
+
+    // 2. Resolve Society ID securely from server authentication context
+    const societyId = isPlatform && body.societyId ? String(body.societyId) : req.societyId;
+    if (!societyId) {
+      return res.status(403).json({ error: 'Tenant context required', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    // 3. Map PassType enum (Prisma strictly supports GUEST, DELIVERY, CAB, SERVICE, FREQUENT)
+    const rawCategory = String(body.passType || body.category || 'GUEST').toUpperCase();
+    let passType: 'GUEST' | 'DELIVERY' | 'CAB' | 'SERVICE' | 'FREQUENT' = 'GUEST';
+    if (rawCategory === 'DELIVERY') passType = 'DELIVERY';
+    else if (rawCategory === 'CAB') passType = 'CAB';
+    else if (rawCategory === 'SERVICE' || rawCategory === 'SERVICE_PROVIDER') passType = 'SERVICE';
+    else if (rawCategory === 'FREQUENT' || rawCategory === 'DOMESTIC_WORKER') passType = 'FREQUENT';
+    else if (rawCategory === 'GUEST' || rawCategory === 'EVENT_GROUP') passType = 'GUEST';
+
+    // 4. Validity dates & window validation
+    const validFrom = body.validFrom ? new Date(body.validFrom) : new Date();
+    const validTo = body.validTo || body.validUntil
+      ? new Date(body.validTo || body.validUntil)
+      : new Date(Date.now() + 24 * 3600 * 1000);
+
+    if (isNaN(validFrom.getTime()) || isNaN(validTo.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format provided for pass validity', code: 'INVALID_DATE_FORMAT' });
+    }
+    if (validTo.getTime() <= validFrom.getTime()) {
+      return res.status(400).json({ error: 'validUntil must be strictly after validFrom', code: 'INVALID_VALIDITY_WINDOW' });
+    }
+
+    // 5. Map PassStatus
+    const rawStatus = String(body.status || 'APPROVED').toUpperCase();
+    let status: 'PENDING' | 'APPROVED' | 'CHECKED_IN' | 'CHECKED_OUT' | 'EXPIRED' | 'CANCELLED' | 'REJECTED' = 'APPROVED';
+    if (rawStatus === 'CHECKED_IN') status = 'CHECKED_IN';
+    else if (rawStatus === 'PENDING' || rawStatus === 'EXPECTED') status = 'PENDING';
+    else if (rawStatus === 'CANCELLED' || rawStatus === 'REVOKED') status = 'CANCELLED';
+
+    // 6. Resolve resident linkage
+    let residentId = body.residentId || null;
+    if (req.userRole === 'resident') {
+      const linkedResident = await prisma.resident.findFirst({
+        where: { OR: [{ userId: req.userId }, { id: req.userId }] },
+      }).catch(() => null);
+      residentId = linkedResident?.id || req.userId || null;
+    }
+
+    // 7. Resolve Flat linkage
+    let flatId = body.flatId || null;
+    if (!flatId && body.flatCode) {
+      const matchedFlat = await prisma.flat.findFirst({
+        where: { societyId, flatNumber: { equals: String(body.flatCode).trim(), mode: 'insensitive' } },
+      }).catch(() => null);
+      if (matchedFlat) flatId = matchedFlat.id;
+    }
+
+    // 8. Generate unambiguous Pass Code & QR Hash
+    const rawPassCode = body.passCode || `GVS-${Math.floor(1000 + Math.random() * 9000)}`;
+    const qrCodeHash = body.qrDataString || body.qrCodeHash || `COMMUNITYOS:${rawPassCode}:${societyId}:${body.flatCode || 'FLAT'}`;
+    const id = body.id || `pass-${Date.now()}`;
+
+    // 9. Persist strictly with allowlisted Prisma fields
     const pass = await prisma.visitorPass.create({
-      data: req.body,
+      data: {
+        id,
+        societyId,
+        residentId,
+        flatId,
+        visitorName,
+        phone,
+        passType,
+        vehicleNumber: body.vehicleNumber ? String(body.vehicleNumber).trim() : null,
+        purpose: body.purpose ? String(body.purpose).trim() : (body.companyName ? `${body.companyName} Delivery` : null),
+        status,
+        qrCodeHash,
+        validFrom,
+        validTo,
+        checkInTime: status === 'CHECKED_IN' ? new Date() : null,
+      },
+      include: { resident: true, flat: true },
     });
-    broadcastEvent('VISITOR_ARRIVAL', pass, pass.societyId);
-    res.status(201).json(pass);
+
+    const normalized = normalizeVisitorPass(pass);
+    broadcastEvent('VISITOR_ARRIVAL', normalized, pass.societyId);
+    res.status(201).json(normalized);
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
 });
 
+// Update or Revoke Visitor Pass
 app.patch('/api/visitor-passes/:id', requireRole(['resident', 'guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
     const id = String(req.params.id);
-    const pass = await prisma.visitorPass.update({
+    const existing = await prisma.visitorPass.findUnique({
       where: { id },
-      data: req.body,
+      include: { resident: true, flat: true },
     });
-    const topic = req.body.status === 'CHECKED_IN' ? 'VISITOR_ENTRY' : req.body.status === 'CHECKED_OUT' ? 'VISITOR_EXIT' : 'VISITOR_APPROVAL';
-    broadcastEvent(topic, pass, pass.societyId);
-    res.json(pass);
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Visitor pass not found', code: 'PASS_NOT_FOUND' });
+    }
+
+    // Fail-closed tenant isolation check
+    if (!isPlatform && (!req.societyId || existing.societyId !== req.societyId)) {
+      return res.status(403).json({ error: 'Access denied: Resource belongs to another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
+    const body = req.body || {};
+    const targetStatus = body.status ? String(body.status).toUpperCase() : undefined;
+
+    // Role-based authorization & state transition validation
+    if (req.userRole === 'resident') {
+      const linkedResident = await prisma.resident.findFirst({
+        where: { OR: [{ userId: req.userId }, { id: req.userId }] },
+      }).catch(() => null);
+
+      const isOwner = existing.residentId === req.userId || existing.resident?.userId === req.userId || (linkedResident && existing.residentId === linkedResident.id);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied: You can only modify your own visitor passes', code: 'UNAUTHORIZED_PASS_ACCESS' });
+      }
+      // Residents cannot check-in or check-out visitors
+      if (targetStatus === 'CHECKED_IN' || targetStatus === 'CHECKED_OUT') {
+        return res.status(403).json({ error: 'Residents cannot execute gate check-in or check-out operations', code: 'OPERATION_NOT_PERMITTED' });
+      }
+    }
+
+    const updateData: any = {};
+
+    // Concurrency & state validation for Check-In
+    if (targetStatus === 'CHECKED_IN') {
+      if (existing.status === 'CHECKED_IN') {
+        return res.status(409).json({ error: 'Visitor is already checked in', code: 'ALREADY_CHECKED_IN', pass: normalizeVisitorPass(existing) });
+      }
+      if (existing.status === 'CANCELLED' || existing.status === 'REJECTED' || existing.status === 'EXPIRED') {
+        return res.status(400).json({ error: `Cannot check in a visitor pass with status: ${existing.status}`, code: 'INVALID_PASS_STATUS' });
+      }
+      if (new Date() > new Date(existing.validTo)) {
+        return res.status(400).json({ error: 'Pass has expired and cannot be checked in', code: 'PASS_EXPIRED' });
+      }
+      updateData.status = 'CHECKED_IN';
+      updateData.checkInTime = new Date();
+    } else if (targetStatus === 'CHECKED_OUT') {
+      // Concurrency & state validation for Check-Out
+      if (existing.status === 'CHECKED_OUT') {
+        return res.status(409).json({ error: 'Visitor is already checked out', code: 'ALREADY_CHECKED_OUT', pass: normalizeVisitorPass(existing) });
+      }
+      if (existing.status !== 'CHECKED_IN') {
+        return res.status(400).json({ error: 'Cannot check out a visitor who has not checked in', code: 'NOT_CHECKED_IN' });
+      }
+      updateData.status = 'CHECKED_OUT';
+      updateData.checkOutTime = new Date();
+    } else if (targetStatus === 'CANCELLED' || targetStatus === 'REVOKED') {
+      if (existing.status === 'CHECKED_IN') {
+        return res.status(400).json({ error: 'Cannot revoke pass while visitor is inside premises. Check out visitor first.', code: 'VISITOR_CURRENTLY_INSIDE' });
+      }
+      updateData.status = 'CANCELLED';
+    } else if (targetStatus) {
+      const validStatuses = ['PENDING', 'APPROVED', 'CHECKED_IN', 'CHECKED_OUT', 'EXPIRED', 'CANCELLED', 'REJECTED'];
+      if (validStatuses.includes(targetStatus)) {
+        updateData.status = targetStatus;
+      }
+    }
+
+    if (body.vehicleNumber !== undefined) updateData.vehicleNumber = String(body.vehicleNumber).trim();
+    if (body.purpose !== undefined) updateData.purpose = String(body.purpose).trim();
+
+    const updated = await prisma.visitorPass.update({
+      where: { id },
+      data: updateData,
+      include: { resident: true, flat: true },
+    });
+
+    const normalized = normalizeVisitorPass(updated);
+    const topic = updateData.status === 'CHECKED_IN' ? 'VISITOR_ENTRY' : updateData.status === 'CHECKED_OUT' ? 'VISITOR_EXIT' : 'VISITOR_STATUS_CHANGE';
+    broadcastEvent(topic, normalized, updated.societyId);
+    res.json(normalized);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Dedicated Gate Check-In Operation
+app.post('/api/visitor-passes/:id/check-in', requireRole(['guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
+  try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    const id = String(req.params.id);
+    const existing = await prisma.visitorPass.findUnique({
+      where: { id },
+      include: { resident: true, flat: true },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Visitor pass not found', code: 'PASS_NOT_FOUND' });
+    }
+    if (!isPlatform && (!req.societyId || existing.societyId !== req.societyId)) {
+      return res.status(403).json({ error: 'Access denied: Cross-society operation forbidden', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+    if (existing.status === 'CHECKED_IN') {
+      return res.status(409).json({ error: 'Visitor is already checked in', code: 'ALREADY_CHECKED_IN', pass: normalizeVisitorPass(existing) });
+    }
+    if (existing.status === 'CANCELLED' || existing.status === 'REJECTED' || existing.status === 'EXPIRED') {
+      return res.status(400).json({ error: `Cannot check in pass with status ${existing.status}`, code: 'INVALID_PASS_STATUS' });
+    }
+    if (new Date() > new Date(existing.validTo)) {
+      return res.status(400).json({ error: 'Pass has expired', code: 'PASS_EXPIRED' });
+    }
+
+    const updated = await prisma.visitorPass.update({
+      where: { id },
+      data: {
+        status: 'CHECKED_IN',
+        checkInTime: new Date(),
+      },
+      include: { resident: true, flat: true },
+    });
+
+    const normalized = normalizeVisitorPass(updated);
+    broadcastEvent('VISITOR_ENTRY', normalized, updated.societyId);
+    res.json({ success: true, message: 'Visitor checked in successfully', pass: normalized });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Dedicated Gate Check-Out Operation
+app.post('/api/visitor-passes/:id/check-out', requireRole(['guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
+  try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    const id = String(req.params.id);
+    const existing = await prisma.visitorPass.findUnique({
+      where: { id },
+      include: { resident: true, flat: true },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Visitor pass not found', code: 'PASS_NOT_FOUND' });
+    }
+    if (!isPlatform && (!req.societyId || existing.societyId !== req.societyId)) {
+      return res.status(403).json({ error: 'Access denied: Cross-society operation forbidden', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+    if (existing.status === 'CHECKED_OUT') {
+      return res.status(409).json({ error: 'Visitor is already checked out', code: 'ALREADY_CHECKED_OUT', pass: normalizeVisitorPass(existing) });
+    }
+    if (existing.status !== 'CHECKED_IN') {
+      return res.status(400).json({ error: 'Cannot check out a visitor who is not currently inside (status: ' + existing.status + ')', code: 'NOT_CHECKED_IN' });
+    }
+
+    const updated = await prisma.visitorPass.update({
+      where: { id },
+      data: {
+        status: 'CHECKED_OUT',
+        checkOutTime: new Date(),
+      },
+      include: { resident: true, flat: true },
+    });
+
+    const normalized = normalizeVisitorPass(updated);
+    broadcastEvent('VISITOR_EXIT', normalized, updated.societyId);
+    res.json({ success: true, message: 'Visitor checked out successfully', pass: normalized });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
@@ -547,9 +1205,39 @@ app.patch('/api/visitor-passes/:id', requireRole(['resident', 'guard', 'secretar
 
 app.delete('/api/visitor-passes/:id', requireRole(['resident', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
     const id = String(req.params.id);
-    const pass = await prisma.visitorPass.findUnique({ where: { id } });
-    if (!pass) return res.status(404).json({ error: 'Visitor pass not found' });
+    const pass = await prisma.visitorPass.findUnique({
+      where: { id },
+      include: { resident: true },
+    });
+
+    if (!pass) return res.status(404).json({ error: 'Visitor pass not found', code: 'PASS_NOT_FOUND' });
+
+    // Fail-closed tenant check
+    if (!isPlatform && (!req.societyId || pass.societyId !== req.societyId)) {
+      return res.status(403).json({ error: 'Access denied to pass belonging to another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
+    // Resident ownership check
+    if (req.userRole === 'resident') {
+      const linkedResident = await prisma.resident.findFirst({
+        where: { OR: [{ userId: req.userId }, { id: req.userId }] },
+      }).catch(() => null);
+
+      const isOwner = pass.residentId === req.userId || pass.resident?.userId === req.userId || (linkedResident && pass.residentId === linkedResident.id);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied: You can only delete your own passes', code: 'UNAUTHORIZED_PASS_ACCESS' });
+      }
+    }
+
+    if (pass.status === 'CHECKED_IN') {
+      return res.status(400).json({ error: 'Cannot delete visitor pass while visitor is inside premises. Check out visitor first.', code: 'VISITOR_CURRENTLY_INSIDE' });
+    }
 
     await prisma.visitorPass.delete({ where: { id } });
     broadcastEvent('VISITOR_PASS_DELETED', { id }, pass.societyId);
@@ -562,7 +1250,16 @@ app.delete('/api/visitor-passes/:id', requireRole(['resident', 'secretary', 'adm
 // Automated Visitor Overstay Detection & Alert Engine
 app.post('/api/visitor-passes/check-overstay', requireRole(['guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    if (!isPlatform && req.body.societyId && String(req.body.societyId) !== req.societyId) {
+      return res.status(403).json({ error: 'Access denied: Cannot check overstay for another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
+    const societyId = isPlatform && req.body.societyId ? String(req.body.societyId) : req.societyId;
     const now = new Date();
 
     const overstayPasses = await prisma.visitorPass.findMany({
@@ -590,7 +1287,7 @@ app.post('/api/visitor-passes/check-overstay', requireRole(['guard', 'secretary'
         overstayMinutes: Math.round((now.getTime() - new Date(p.validTo).getTime()) / 60000),
       }, societyId);
 
-      flagged.push(updated);
+      flagged.push(normalizeVisitorPass(updated));
     }
 
     res.json({ success: true, checkedAt: now.toISOString(), overstayCount: flagged.length, passes: flagged });
@@ -602,23 +1299,43 @@ app.post('/api/visitor-passes/check-overstay', requireRole(['guard', 'secretary'
 // Gate Pass Verification Endpoint
 app.post('/api/visitor-passes/verify', requireRole(['guard', 'secretary', 'admin', 'resident']), async (req: Request, res: Response) => {
   try {
+    const isPlatform = isPlatformAdmin(req);
+    if (!isPlatform && !req.societyId) {
+      return res.status(403).json({ error: 'Tenant context required: User is not linked to any active society', code: 'TENANT_CONTEXT_REQUIRED' });
+    }
+
+    if (!isPlatform && req.body.societyId && String(req.body.societyId) !== req.societyId) {
+      return res.status(403).json({ error: 'Access denied: Cannot verify passes for another society', code: 'TENANT_ISOLATION_VIOLATION' });
+    }
+
     const { codeOrQr } = req.body;
     const clean = String(codeOrQr || '').trim().toUpperCase();
 
-    const passes = await prisma.visitorPass.findMany({
-      where: req.societyId ? { societyId: req.societyId } : undefined,
+    if (!clean) {
+      return res.status(400).json({ isValid: false, status: 'invalid', message: 'Passcode or QR string is required' });
+    }
+
+    const targetSocietyId = isPlatform && req.body.societyId ? String(req.body.societyId) : req.societyId;
+
+    // F-B1-03: Indexed findFirst query directly on PostgreSQL scoped to target society
+    const matched = await prisma.visitorPass.findFirst({
+      where: {
+        ...(targetSocietyId ? { societyId: targetSocietyId } : {}),
+        OR: [
+          { id: { equals: clean, mode: 'insensitive' } },
+          { id: { equals: `PASS-${clean}`, mode: 'insensitive' } },
+          { id: { endsWith: clean, mode: 'insensitive' } },
+          { qrCodeHash: { equals: clean, mode: 'insensitive' } },
+          { qrCodeHash: { contains: clean, mode: 'insensitive' } },
+          { phone: { equals: clean } },
+          { phone: { contains: clean } },
+        ],
+      },
       include: {
         resident: true,
         flat: true,
-      }
+      },
     });
-
-    const matched = passes.find(p =>
-      p.id.toUpperCase() === clean ||
-      p.id.toUpperCase() === `PASS-${clean}` ||
-      (p.qrCodeHash && p.qrCodeHash.toUpperCase().includes(clean)) ||
-      p.id.toUpperCase().endsWith(clean)
-    );
 
     if (!matched) {
       return res.status(404).json({
@@ -628,13 +1345,14 @@ app.post('/api/visitor-passes/verify', requireRole(['guard', 'secretary', 'admin
       });
     }
 
+    const normalized = normalizeVisitorPass(matched);
     const now = new Date();
     if (matched.status === 'CANCELLED' || matched.status === 'REJECTED') {
       return res.json({
         isValid: false,
         status: 'cancelled',
         message: 'This gate pass is no longer active.',
-        pass: matched,
+        pass: normalized,
       });
     }
 
@@ -643,7 +1361,7 @@ app.post('/api/visitor-passes/verify', requireRole(['guard', 'secretary', 'admin
         isValid: false,
         status: 'expired',
         message: 'This gate pass has expired.',
-        pass: matched,
+        pass: normalized,
       });
     }
 
@@ -651,7 +1369,7 @@ app.post('/api/visitor-passes/verify', requireRole(['guard', 'secretary', 'admin
       isValid: true,
       status: matched.status === 'CHECKED_IN' ? 'checked_in' : 'valid',
       message: 'Gate pass verified successfully!',
-      pass: matched,
+      pass: normalized,
     });
   } catch (error) {
     res.status(500).json({ error: String(error) });
@@ -1168,10 +1886,17 @@ app.get('/api/amenities/:id/availability', async (req: Request, res: Response) =
   try {
     const amenityId = String(req.params.id);
     const date = String(req.query.date || new Date().toISOString().substring(0, 10));
-    const societyId = req.societyId || (req.query.societyId as string) || 'soc-gvs';
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    const societyId = tenant.societyId;
 
-    // 1. Get amenity capacity & hours
-    let amenity = await prisma.amenity.findUnique({ where: { id: amenityId } });
+    // 1. Get amenity capacity & hours (strictly society-scoped)
+    const amenity = await prisma.amenity.findFirst({
+      where: {
+        id: amenityId,
+        ...(!tenant.isPlatform || societyId ? { societyId } : {}),
+      },
+    });
     let capacityPerSlot = amenity?.capacityPerSlot || 10;
     let openTime = (amenity as any)?.openTime || '06:00';
     let closeTime = (amenity as any)?.closeTime || '22:00';
@@ -1179,8 +1904,16 @@ app.get('/api/amenities/:id/availability', async (req: Request, res: Response) =
     let amenityName = amenity?.name || 'Amenity Facility';
 
     if (!amenity) {
-      // Fallback to EntityRecord
-      const entityRec = await prisma.entityRecord.findUnique({ where: { id: amenityId } }).catch(() => null);
+      // Fallback to EntityRecord strictly scoped to amenity collections and caller society
+      const entityRec = await prisma.entityRecord
+        .findFirst({
+          where: {
+            id: amenityId,
+            collection: { in: ['amenities', 'amenity'] },
+            ...(!tenant.isPlatform || societyId ? { societyId } : {}),
+          },
+        })
+        .catch(() => null);
       if (entityRec && entityRec.data) {
         const d = entityRec.data as any;
         capacityPerSlot = d.capacityPerSlot || 10;
@@ -1262,10 +1995,16 @@ app.get('/api/amenities/:id/availability', async (req: Request, res: Response) =
 app.post('/api/amenities/:id/book', requireRole(['resident', 'secretary', 'admin', 'committee']), async (req: Request, res: Response) => {
   try {
     const amenityId = String(req.params.id);
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    if (!tenant.societyId) {
+      return res.status(400).json({ error: 'A valid target societyId is required.', code: 'TARGET_SOCIETY_REQUIRED' });
+    }
+    const societyId = tenant.societyId;
+    const callerRole = (req.authContext?.role || '').toLowerCase();
     const {
-      residentId = 'user-resident-01',
-      residentName = 'Resident',
+      residentId: bodyResidentId,
+      residentName = req.authContext?.name || 'Resident',
       flatNumber = 'A-101',
       bookingDate,
       startTime,
@@ -1276,6 +2015,7 @@ app.post('/api/amenities/:id/book', requireRole(['resident', 'secretary', 'admin
       paymentStatus = 'FREE',
       paymentId,
     } = req.body;
+    const residentId = callerRole === 'resident' ? req.authContext!.userId : (bodyResidentId || req.authContext!.userId);
 
     if (!bookingDate || !startTime || !endTime) {
       return res.status(400).json({ error: 'Missing required booking fields: bookingDate, startTime, endTime' });
@@ -1283,14 +2023,22 @@ app.post('/api/amenities/:id/book', requireRole(['resident', 'secretary', 'admin
 
     const requestedPax = Number(guestCount) || 1;
 
-    // 1. Fetch Amenity Capacity & Policy
-    let amenity = await prisma.amenity.findUnique({ where: { id: amenityId } });
+    // 1. Fetch Amenity Capacity & Policy (strictly society-scoped & collection-scoped)
+    const amenity = await prisma.amenity.findFirst({ where: { id: amenityId, societyId } });
     let capacityPerSlot = amenity?.capacityPerSlot || 10;
     let requiresApproval = amenity?.requiresApproval || false;
     let amenityName = amenity?.name || 'Amenity Facility';
 
     if (!amenity) {
-      const entityRec = await prisma.entityRecord.findUnique({ where: { id: amenityId } }).catch(() => null);
+      const entityRec = await prisma.entityRecord
+        .findFirst({
+          where: {
+            id: amenityId,
+            collection: { in: ['amenities', 'amenity'] },
+            societyId,
+          },
+        })
+        .catch(() => null);
       if (entityRec && entityRec.data) {
         const d = entityRec.data as any;
         capacityPerSlot = d.capacityPerSlot || 10;
@@ -1380,32 +2128,47 @@ app.post('/api/amenities/:id/book', requireRole(['resident', 'secretary', 'admin
   }
 });
 
-// Cancel Booking Endpoint
+// Cancel Booking Endpoint (F-B22-01C: strictly collection-, society-, and ownership-scoped)
 app.post('/api/amenities/bookings/:id/cancel', requireRole(['resident', 'secretary', 'admin', 'committee']), async (req: Request, res: Response) => {
   try {
     const bookingId = String(req.params.id);
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
 
-    const record = await prisma.entityRecord.findUnique({ where: { id: bookingId } });
+    const record = await prisma.entityRecord.findFirst({
+      where: {
+        id: bookingId,
+        collection: 'amenityBookings',
+        ...(!tenant.isPlatform || tenant.societyId ? { societyId: tenant.societyId } : {}),
+      },
+    });
     if (!record) {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    const dataObj = (record.data as any) || {};
+    const dataObj = { ...((record.data as any) || {}) };
+    const callerRole = (req.authContext?.role || '').toLowerCase();
+    if (callerRole === 'resident' && dataObj.residentId && dataObj.residentId !== req.authContext?.userId) {
+      return res.status(403).json({
+        error: 'Forbidden: Residents can only cancel their own amenity bookings.',
+        code: 'UNAUTHORIZED_BOOKING_ACCESS',
+      });
+    }
+
     dataObj.status = 'CANCELLED';
     dataObj.updatedAt = new Date().toISOString();
 
-    await prisma.entityRecord.update({
-      where: { id: bookingId },
-      data: { data: dataObj },
+    await prisma.entityRecord.updateMany({
+      where: { id: record.id, collection: 'amenityBookings', societyId: record.societyId },
+      data: { data: dataObj, updatedAt: new Date() },
     });
 
-    broadcastEvent('AMENITY_BOOKED', dataObj, societyId);
-    broadcastEvent('AMENITY_AVAILABILITY_CHANGED', { amenityId: dataObj.amenityId, bookingDate: dataObj.bookingDate }, societyId);
+    broadcastEvent('AMENITY_BOOKED', dataObj, record.societyId);
+    broadcastEvent('AMENITY_AVAILABILITY_CHANGED', { amenityId: dataObj.amenityId, bookingDate: dataObj.bookingDate }, record.societyId);
 
     return res.json(dataObj);
   } catch (error) {
-    return res.status(500).json({ error: String(error) });
+    return res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
@@ -1522,45 +2285,74 @@ app.post('/api/community-events/:id/rsvp', requireRole(['resident', 'secretary',
   }
 });
 
-// Emergency Incidents
-app.get('/api/emergency-incidents', async (req: Request, res: Response) => {
+// Emergency Incidents (F-B22-01B & F-B22-02B hardened)
+app.get('/api/emergency-incidents', requireRole(['resident', 'guard', 'secretary', 'committee', 'admin']), async (req: Request, res: Response) => {
   try {
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    const callerRole = (req.authContext?.role || '').toLowerCase();
+    const where: any = {};
+    if (!tenant.isPlatform || tenant.societyId) {
+      where.societyId = tenant.societyId;
+    }
+    // Residents access Child Safety SOS incidents strictly via ownership-scoped /api/children/alerts
+    if (callerRole === 'resident') {
+      where.incidentType = { not: 'CHILD_SAFETY' };
+    }
     const incidents = await prisma.emergencyIncident.findMany({
-      where: req.societyId ? { societyId: req.societyId } : undefined,
+      where,
       orderBy: { createdAt: 'desc' },
     });
     res.json(incidents);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
 app.post('/api/emergency-incidents', requireRole(['resident', 'guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    if (!tenant.societyId) {
+      return res.status(400).json({ error: 'A valid target societyId is required.', code: 'TARGET_SOCIETY_REQUIRED' });
+    }
     const incident = await prisma.emergencyIncident.create({
-      data: req.body,
+      data: { ...req.body, societyId: tenant.societyId },
     });
-    broadcastEvent('EMERGENCY_ALERTS', incident, incident.societyId);
+    broadcastEvent('EMERGENCY_ALERTS', incident, incident.societyId, {
+      allowedRoles: ['guard', 'secretary', 'committee', 'admin'],
+      ...(req.authContext?.role === 'resident' && req.authContext?.userId ? { targetUserIds: [req.authContext.userId] } : {}),
+    });
     res.status(201).json(incident);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
 app.patch('/api/emergency-incidents/:id/resolve', requireRole(['guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
     const id = String(req.params.id);
+    const existing = await prisma.emergencyIncident.findFirst({
+      where: { id, ...(!tenant.isPlatform || tenant.societyId ? { societyId: tenant.societyId } : {}) },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'Emergency incident not found.' });
+    }
     const incident = await prisma.emergencyIncident.update({
-      where: { id },
+      where: { id: existing.id },
       data: {
         dispatchStatus: 'RESOLVED',
         resolvedAt: new Date(),
       },
     });
-    broadcastEvent('EMERGENCY_INCIDENT_RESOLVED', incident, incident.societyId);
+    broadcastEvent('EMERGENCY_INCIDENT_RESOLVED', incident, incident.societyId, {
+      allowedRoles: ['guard', 'secretary', 'committee', 'admin'],
+    });
     res.json(incident);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
@@ -1654,7 +2446,7 @@ app.post('/api/secretary/provision-user', async (req: Request, res: Response) =>
   }
 });
 
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', loginRateLimiter(10, 60000), async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -1664,18 +2456,76 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       where: { email: email.toLowerCase().trim() },
       include: { society: true, flat: true },
     });
-    if (!user) {
+    // Unified failure response to prevent account enumeration (CWE-204)
+    if (!user || !user.passwordHash || !user.salt) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    if (!user.passwordHash || !user.salt) {
-      return res.status(401).json({ error: 'Password authentication is not configured for this user. Please contact administrator.' });
+
+    // Bounded Concurrency Check: Limit simultaneous expensive scrypt operations
+    if (!authConcurrencyLimiter.tryAcquire()) {
+      res.setHeader('Retry-After', '1');
+      return res.status(429).json({
+        error: 'Authentication service is currently processing maximum concurrent requests. Please retry in a moment.',
+        code: 'AUTH_CONCURRENCY_EXCEEDED',
+        retryAfterSeconds: 1,
+      });
     }
-    const computedHash = UniversalProvisioningService.hashPassword(password, user.salt);
-    if (!timingSafeCompare(computedHash, user.passwordHash)) {
+
+    let isValidPassword = false;
+    try {
+      // Asynchronous password verification: offloads scrypt work to libuv worker threadpool
+      isValidPassword = await verifyPasswordAsync(password, user.passwordHash, user.salt);
+    } finally {
+      // Guarantee permit is released in all cases (success, failure, or thrown error)
+      authConcurrencyLimiter.release();
+    }
+
+    if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+
+    // Enforce account status check before issuing token (CWE-285)
+    if (user.status !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Account is inactive or suspended. Please contact administrator.' });
+    }
+
+    // Transparent Rehash-on-Login: Automatically upgrade legacy HMAC or older scrypt hashes to target N=131072
+    // F-24: Conditional optimistic update via updateMany to prevent stale hash / password overwrite races
+    if (needsRehash(user.passwordHash)) {
+      const verifiedHash = user.passwordHash;
+      (async () => {
+        try {
+          const upgradedSalt = generateSalt(16);
+          const upgradedHash = await hashPasswordScryptAsync(password, upgradedSalt);
+          const result = await prisma.user.updateMany({
+            where: {
+              id: user.id,
+              passwordHash: verifiedHash,
+            },
+            data: {
+              passwordHash: upgradedHash,
+              salt: upgradedSalt,
+            },
+          });
+          if (result.count === 0) {
+            console.info('[AuthUpgrade] Transparent rehash skipped: user credentials modified concurrently.');
+          }
+        } catch (err: any) {
+          console.warn('[AuthUpgrade] Transparent password rehash deferred:', err?.message || err);
+        }
+      })();
+    }
+
+    const token = generateAuthToken({
+      sub: user.id,
+      email: user.email || undefined,
+      role: user.role.toLowerCase(),
+      societyId: user.societyId || 'soc-gvs',
+      name: user.name,
+    });
     res.json({
       success: true,
+      token,
       user: {
         id: user.id,
         name: user.name,
@@ -1688,7 +2538,8 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error?.message || 'Login failed' });
+    const sanitized = sanitizeErrorMessage(error, 'Login failed');
+    res.status(500).json({ error: sanitized });
   }
 });
 
@@ -2007,135 +2858,9 @@ app.patch('/api/facility/amc/:id', requireRole(['facility_manager', 'secretary',
 });
 
 // ==========================================
-// 🛡️ CHILD SAFETY & BIOMETRIC GATE RADAR
+// 🛡️ CHILD SAFETY & BIOMETRIC GATE RADAR (Phase B.2.2 Authoritative Relational APIs)
 // ==========================================
-app.get('/api/children', async (req: Request, res: Response) => {
-  try {
-    const societyId = req.societyId || (req.query.societyId as string) || 'soc-gvs';
-    const residentId = req.userId || (req.query.residentId as string);
-    const where: any = { collection: 'child_profiles' };
-    if (societyId && societyId !== 'all') where.societyId = societyId;
-    const records = await prisma.entityRecord.findMany({ where, orderBy: { createdAt: 'desc' } });
-    const children = records.map((r) => ({ id: r.id, societyId: r.societyId, ...(r.data as any), createdAt: r.createdAt }));
-    const filtered = residentId && req.userRole === 'resident' ? children.filter((c: any) => c.residentId === residentId) : children;
-    res.json(filtered);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-app.post('/api/children', requireRole(['resident', 'secretary', 'admin']), async (req: Request, res: Response) => {
-  try {
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
-    const id = req.body.id || `child_${Date.now()}`;
-    const childData = {
-      ...req.body,
-      id,
-      societyId,
-      gatePassCode: req.body.gatePassCode || `PASS-${Math.floor(1000 + Math.random() * 9000)}`,
-      createdAt: new Date().toISOString(),
-    };
-    await prisma.entityRecord.create({
-      data: {
-        id,
-        collection: 'child_profiles',
-        societyId,
-        data: childData,
-      },
-    });
-    broadcastEvent('CHILD_PROFILE_CREATED', childData, societyId);
-    res.status(201).json(childData);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-app.get('/api/children/passes', async (req: Request, res: Response) => {
-  try {
-    const societyId = req.societyId || (req.query.societyId as string) || 'soc-gvs';
-    const records = await prisma.entityRecord.findMany({
-      where: { collection: 'child_gate_passes', societyId: societyId !== 'all' ? societyId : undefined },
-      orderBy: { createdAt: 'desc' },
-    });
-    const passes = records.map((r) => ({ id: r.id, societyId: r.societyId, ...(r.data as any), createdAt: r.createdAt }));
-    res.json(passes);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-app.post('/api/children/passes', requireRole(['resident', 'secretary', 'admin']), async (req: Request, res: Response) => {
-  try {
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
-    const id = req.body.id || `cpass_${Date.now()}`;
-    const passData = {
-      ...req.body,
-      id,
-      societyId,
-      status: 'ACTIVE',
-      passCode: req.body.passCode || `CGP-${Math.floor(100000 + Math.random() * 900000)}`,
-      validUntil: req.body.validUntil || new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
-      createdAt: new Date().toISOString(),
-    };
-    await prisma.entityRecord.create({
-      data: {
-        id,
-        collection: 'child_gate_passes',
-        societyId,
-        data: passData,
-      },
-    });
-    broadcastEvent('CHILD_GATE_PASS_GENERATED', passData, societyId);
-    res.status(201).json(passData);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-app.post('/api/children/passes/:id/verify', requireRole(['guard', 'secretary', 'admin']), async (req: Request, res: Response) => {
-  try {
-    const id = String(req.params.id);
-    const { guardName, gate } = req.body;
-    const record = await prisma.entityRecord.findUnique({ where: { id } });
-    if (!record) return res.status(404).json({ error: 'Child pass not found' });
-    const updatedData = {
-      ...(record.data as any),
-      status: 'VERIFIED_EXITED',
-      verifiedAt: new Date().toISOString(),
-      verifiedByGuard: guardName || 'Gate Guard',
-      exitGate: gate || 'Main Gate',
-    };
-    await prisma.entityRecord.update({
-      where: { id },
-      data: { data: updatedData, updatedAt: new Date() },
-    });
-    broadcastEvent('CHILD_GATE_PASS_VERIFIED', updatedData, record.societyId);
-    res.json(updatedData);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-app.post('/api/children/sos', async (req: Request, res: Response) => {
-  try {
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
-    const incident = await prisma.emergencyIncident.create({
-      data: {
-        societyId,
-        incidentType: 'CHILD_SAFETY',
-        severity: 'CRITICAL',
-        location: req.body.location || 'Society Premises',
-        description: req.body.description || `CHILD MISSING / UNATTENDED ALERT: ${req.body.childName || 'Child'}`,
-        dispatchStatus: 'DISPATCHED',
-      },
-    });
-    broadcastEvent('EMERGENCY_INCIDENT_CREATED', incident, societyId);
-    broadcastEvent('CHILD_SAFETY_SOS_TRIGGERED', { ...req.body, incidentId: incident.id }, societyId);
-    res.status(201).json(incident);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
+app.use('/api/children', childSafetyRouter);
 
 // ==========================================
 // 🚗 QR PARKING & VEHICLE ACCESS MANAGEMENT
@@ -2316,20 +3041,41 @@ app.get('/api/housekeeping/garbage-logs', async (req: Request, res: Response) =>
   }
 });
 
-app.post('/api/housekeeping/garbage-logs/confirm', async (req: Request, res: Response) => {
+app.post('/api/housekeeping/garbage-logs/confirm', requireRole(['resident', 'facility_manager', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
-    const { id } = req.body;
-    const record = await prisma.entityRecord.findUnique({ where: { id } });
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+
+    const rawId = req.body?.id;
+    if (typeof rawId !== 'string' || rawId.trim().length === 0) {
+      return res.status(400).json({ error: 'Valid pickup log id is required.', code: 'INVALID_ID' });
+    }
+    const id = rawId.trim();
+
+    const record = await prisma.entityRecord.findFirst({
+      where: {
+        id,
+        collection: 'garbage_pickup_logs',
+        ...(!tenant.isPlatform || tenant.societyId ? { societyId: tenant.societyId } : {}),
+      },
+    });
     if (!record) return res.status(404).json({ error: 'Pickup log not found' });
-    const updated = { ...(record.data as any), status: 'COLLECTED', confirmedByResident: true, confirmedAt: new Date().toISOString() };
-    await prisma.entityRecord.update({
-      where: { id },
+
+    const updated = {
+      ...(record.data as any),
+      status: 'COLLECTED',
+      confirmedByResident: true,
+      confirmedById: req.authContext?.userId,
+      confirmedAt: new Date().toISOString(),
+    };
+    await prisma.entityRecord.updateMany({
+      where: { id: record.id, collection: 'garbage_pickup_logs', societyId: record.societyId },
       data: { data: updated, updatedAt: new Date() },
     });
     broadcastEvent('GARBAGE_PICKUP_CONFIRMED', updated, record.societyId);
     res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
@@ -2363,18 +3109,29 @@ app.get('/api/housekeeping/tasks', async (req: Request, res: Response) => {
 
 app.patch('/api/housekeeping/tasks/:id', requireRole(['facility_manager', 'secretary', 'admin']), async (req: Request, res: Response) => {
   try {
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+
     const id = String(req.params.id);
-    const record = await prisma.entityRecord.findUnique({ where: { id } });
+    const record = await prisma.entityRecord.findFirst({
+      where: {
+        id,
+        collection: 'housekeeping_tasks',
+        ...(!tenant.isPlatform || tenant.societyId ? { societyId: tenant.societyId } : {}),
+      },
+    });
     if (!record) return res.status(404).json({ error: 'Task not found' });
-    const updated = { ...(record.data as any), ...req.body, updatedAt: new Date().toISOString() };
-    await prisma.entityRecord.update({
-      where: { id },
+
+    const { id: _ignoreId, societyId: _ignoreSoc, collection: _ignoreCol, _audience: _ignoreAud, ...safeBody } = (req.body || {}) as Record<string, any>;
+    const updated = { ...(record.data as any), ...safeBody, updatedAt: new Date().toISOString() };
+    await prisma.entityRecord.updateMany({
+      where: { id: record.id, collection: 'housekeeping_tasks', societyId: record.societyId },
       data: { data: updated, updatedAt: new Date() },
     });
     broadcastEvent('HOUSEKEEPING_TASK_UPDATED', updated, record.societyId);
     res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
@@ -3320,43 +4077,207 @@ const ALLOWED_QUERY_TABLES: Record<string, string[]> = {
   entityRecord: ['resident', 'secretary', 'guard', 'committee', 'facility_manager', 'vendor', 'admin'],
 };
 
+// Blocked legacy Child Safety collection identifiers — must use authoritative /api/children routes
+const BLOCKED_CHILD_SAFETY_COLLECTIONS = new Set([
+  'childprofiles',
+  'childprofile',
+  'children',
+  'child',
+  'childgatepasses',
+  'childgatepass',
+  'childauthorizedpickups',
+  'childauthorizedpickup',
+  'childexitlogs',
+  'childexitlog',
+  'childsafetyalerts',
+  'childsafetyalert',
+  'childsafety',
+  'childpickups',
+  'childpickup',
+  'childpass',
+  'childpasses',
+  'childsos',
+]);
+
+const BLOCKED_CHILD_SAFETY_RAW_NAMES = [
+  'child_profiles',
+  'child_profile',
+  'children',
+  'child',
+  'child_gate_passes',
+  'child_gate_pass',
+  'child_authorized_pickups',
+  'child_authorized_pickup',
+  'child_exit_logs',
+  'child_exit_log',
+  'child_safety_alerts',
+  'child_safety_alert',
+  'child_safety',
+];
+
+function normalizeCollectionKey(raw: string): string {
+  let decoded = raw;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isBlockedChildSafetyCollection(raw: string): boolean {
+  const normalized = normalizeCollectionKey(raw);
+  if (!normalized) return true;
+  return (
+    BLOCKED_CHILD_SAFETY_COLLECTIONS.has(normalized) ||
+    normalized.startsWith('childsafety') ||
+    normalized.startsWith('childgatepass') ||
+    normalized.startsWith('childprofile') ||
+    normalized.startsWith('childexitlog') ||
+    normalized.startsWith('childauthorizedpickup')
+  );
+}
+
+function resolveGenericCollectionSociety(req: Request, res: Response): { societyId: string; isPlatform: boolean } | null {
+  const isPlatform = isPlatformAdmin(req);
+  const authSocietyId = (req.authContext?.societyId || '').trim();
+  const requestedSociety =
+    (typeof req.body?.societyId === 'string' && req.body.societyId.trim()) ||
+    (typeof req.query?.societyId === 'string' && req.query.societyId.trim()) ||
+    '';
+
+  if (!isPlatform) {
+    if (!authSocietyId || authSocietyId === 'soc-platform' || authSocietyId === 'all' || authSocietyId === '*') {
+      res.status(403).json({
+        error: 'Tenant context required: User is not linked to an active society.',
+        code: 'TENANT_CONTEXT_REQUIRED',
+      });
+      return null;
+    }
+    if (requestedSociety && requestedSociety !== authSocietyId) {
+      res.status(403).json({
+        error: 'Forbidden: Cross-society collection access is not permitted.',
+        code: 'TENANT_ISOLATION_VIOLATION',
+      });
+      return null;
+    }
+    return { societyId: authSocietyId, isPlatform: false };
+  }
+
+  return { societyId: requestedSociety || '', isPlatform: true };
+}
+
+function rejectBlockedChildSafetyCollection(res: Response): Response {
+  return res.status(403).json({
+    error: 'Direct generic collection access to Child Safety records is forbidden. Use authoritative /api/children endpoints.',
+    code: 'CHILD_SAFETY_COLLECTION_FORBIDDEN',
+  });
+}
+
+// F-B22-01A & F-B22-01B: Normalized resolver for native Prisma models exposed via generic collection endpoints
+const GENERIC_WRITE_PROTECTED_MODELS = new Set([
+  'entityRecord',
+  'emergencyIncident',
+  'auditLog',
+  'societyMembership',
+]);
+
+function resolveNativeCollectionModel(colName: string): string | null {
+  const normalized = normalizeCollectionKey(colName);
+  if (!normalized) return null;
+  const matched = Object.keys(ALLOWED_QUERY_TABLES).find((k) => {
+    const nk = k.toLowerCase();
+    return (
+      nk === normalized ||
+      `${nk}s` === normalized ||
+      `${nk}es` === normalized ||
+      (nk.endsWith('y') && `${nk.slice(0, -1)}ies` === normalized)
+    );
+  });
+  return matched || null;
+}
+
+function enforceNativeModelRolePolicy(
+  req: Request,
+  res: Response,
+  nativeKey: string,
+  isPlatform: boolean
+): boolean {
+  const allowedRoles = ALLOWED_QUERY_TABLES[nativeKey];
+  const callerRole = (req.authContext?.role || '').toLowerCase();
+  if (!allowedRoles || !callerRole || (!isPlatform && !allowedRoles.includes(callerRole))) {
+    res.status(403).json({
+      error: `Access denied: Role '${callerRole || 'unknown'}' is not authorized to access '${nativeKey}'.`,
+      code: 'INSUFFICIENT_PERMISSIONS',
+    });
+    return false;
+  }
+  return true;
+}
+
 // Generic Collection CRUD Endpoints for PostgreSQL
 app.get('/api/collections/:collection', async (req: Request, res: Response) => {
   try {
-    const colName = req.params.collection as string;
-    const societyId = req.societyId || (req.query.societyId as string) || 'soc-gvs';
+    const colName = String(req.params.collection || '');
+    if (isBlockedChildSafetyCollection(colName)) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
 
-    // Check if table exists natively in Prisma first (supporting plural and camelCase matches)
-    const nativeKey = Object.keys(ALLOWED_QUERY_TABLES).find(
-      (k) =>
-        k.toLowerCase() === colName.toLowerCase() ||
-        `${k}s`.toLowerCase() === colName.toLowerCase() ||
-        `${k}es`.toLowerCase() === colName.toLowerCase() ||
-        (colName.toLowerCase() === 'visitorpasses' && k === 'visitorPass') ||
-        (colName.toLowerCase() === 'billinginvoices' && k === 'billingInvoice') ||
-        (colName.toLowerCase() === 'parkingslots' && k === 'parkingSlot') ||
-        (colName.toLowerCase() === 'domesticworkers' && k === 'domesticWorker')
-    );
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    const societyId = tenant.societyId;
+    const callerRole = (req.authContext?.role || '').toLowerCase();
+
+    // Check if collection maps to a native Prisma model (enforcing ALLOWED_QUERY_TABLES role policy!)
+    const nativeKey = resolveNativeCollectionModel(colName);
 
     if (nativeKey && (prisma as any)[nativeKey]) {
+      if (!enforceNativeModelRolePolicy(req, res, nativeKey, tenant.isPlatform)) {
+        return;
+      }
+
       const where: any = {};
-      if (societyId && societyId !== 'all') where.societyId = societyId;
+      if (!tenant.isPlatform || (societyId && societyId !== 'all')) {
+        where.societyId = societyId;
+      }
+
+      // F-B22-01A: Never allow `entityRecord` alias to dump Child Safety EntityRecord rows
+      if (nativeKey === 'entityRecord') {
+        where.collection = { notIn: BLOCKED_CHILD_SAFETY_RAW_NAMES };
+      }
+
+      // F-B22-01B: Residents access Child Safety SOS incidents strictly via ownership-scoped /api/children/alerts
+      if (nativeKey === 'emergencyIncident' && callerRole === 'resident') {
+        where.incidentType = { not: 'CHILD_SAFETY' };
+      }
+
       try {
-        const records = await (prisma as any)[nativeKey].findMany({ where, orderBy: { createdAt: 'desc' } });
+        let records = await (prisma as any)[nativeKey].findMany({ where, orderBy: { createdAt: 'desc' } });
+        if (nativeKey === 'entityRecord' && Array.isArray(records)) {
+          records = records.filter((r: any) => !isBlockedChildSafetyCollection(String(r?.collection || '')));
+        }
         return res.json(records);
       } catch (dbErr) {
         return res.json([]);
       }
     }
 
-    // Query entity records in PostgreSQL
+    // Query generic entity records in PostgreSQL (strictly non-child, society-scoped)
     const where: any = { collection: colName };
-    if (societyId && societyId !== 'all') where.societyId = societyId;
+    if (!tenant.isPlatform || (societyId && societyId !== 'all')) {
+      where.societyId = societyId;
+    }
     const rows = await prisma.entityRecord.findMany({ where, orderBy: { createdAt: 'desc' } });
-    const docs = rows.map((r) => {
-      const dataObj = typeof r.data === 'object' && r.data ? (r.data as any) : {};
-      return { id: r.id, societyId: r.societyId, ...dataObj, createdAt: r.createdAt, updatedAt: r.updatedAt };
-    });
+    const docs = rows
+      .filter((r) => !isBlockedChildSafetyCollection(String(r?.collection || '')))
+      .map((r) => {
+        const dataObj = typeof r.data === 'object' && r.data ? (r.data as any) : {};
+        return { id: r.id, societyId: r.societyId, ...dataObj, createdAt: r.createdAt, updatedAt: r.updatedAt };
+      });
     res.json(docs);
   } catch (error) {
     res.json([]);
@@ -3365,30 +4286,86 @@ app.get('/api/collections/:collection', async (req: Request, res: Response) => {
 
 app.get('/api/collections/:collection/:id', async (req: Request, res: Response) => {
   try {
-    const colName = String(req.params.collection);
+    const colName = String(req.params.collection || '');
+    if (isBlockedChildSafetyCollection(colName)) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
+
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    const callerRole = (req.authContext?.role || '').toLowerCase();
+
     const id = String(req.params.id);
-    const nativeKey = Object.keys(ALLOWED_QUERY_TABLES).find(k => k.toLowerCase() === colName.toLowerCase());
+    const nativeKey = resolveNativeCollectionModel(colName);
     if (nativeKey && (prisma as any)[nativeKey]) {
-      const record = await (prisma as any)[nativeKey].findUnique({ where: { id } });
+      if (!enforceNativeModelRolePolicy(req, res, nativeKey, tenant.isPlatform)) {
+        return;
+      }
+
+      const where: any = {
+        id,
+        ...(!tenant.isPlatform || tenant.societyId ? { societyId: tenant.societyId } : {}),
+      };
+      if (nativeKey === 'emergencyIncident' && callerRole === 'resident') {
+        where.incidentType = { not: 'CHILD_SAFETY' };
+      }
+
+      const record = await (prisma as any)[nativeKey].findFirst({ where });
+      if (!record) return res.status(404).json({ error: 'Record not found' });
+
+      // F-B22-01A: Block single-ID retrieval of Child Safety rows via entityRecord alias (only within caller's society — cross-society already returned 404)
+      if (nativeKey === 'entityRecord' && isBlockedChildSafetyCollection(String(record.collection || ''))) {
+        return rejectBlockedChildSafetyCollection(res);
+      }
+
       return res.json(record);
     }
 
-    const row = await prisma.entityRecord.findUnique({ where: { id } });
+    const row = await prisma.entityRecord.findFirst({
+      where: {
+        id,
+        collection: colName,
+        ...(!tenant.isPlatform || tenant.societyId ? { societyId: tenant.societyId } : {}),
+      },
+    });
     if (!row) return res.status(404).json({ error: 'Record not found' });
+    if (isBlockedChildSafetyCollection(String(row.collection || ''))) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
     const dataObj = typeof row.data === 'object' && row.data ? (row.data as any) : {};
     res.json({ id: row.id, societyId: row.societyId, ...dataObj, createdAt: row.createdAt, updatedAt: row.updatedAt });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
 app.post('/api/collections/:collection', async (req: Request, res: Response) => {
   try {
-    const colName = String(req.params.collection);
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
+    const colName = String(req.params.collection || '');
+    if (isBlockedChildSafetyCollection(colName)) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
+
+    const nativeKey = resolveNativeCollectionModel(colName);
+    if (nativeKey && GENERIC_WRITE_PROTECTED_MODELS.has(nativeKey)) {
+      return res.status(403).json({
+        error: `Direct generic collection writes to '${colName}' are forbidden. Use dedicated API endpoints.`,
+        code: 'RESTRICTED_COLLECTION_WRITE',
+      });
+    }
+
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    if (nativeKey && !enforceNativeModelRolePolicy(req, res, nativeKey, tenant.isPlatform)) {
+      return;
+    }
+    if (!tenant.societyId) {
+      return res.status(400).json({ error: 'A valid target societyId is required.', code: 'TARGET_SOCIETY_REQUIRED' });
+    }
+    const societyId = tenant.societyId;
     const id = req.body.id || `ent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-    const { id: _, societyId: __, ...data } = req.body;
+    const { id: _, societyId: __, _audience: ___, ...data } = req.body;
 
     const record = await prisma.entityRecord.create({
       data: {
@@ -3402,47 +4379,130 @@ app.post('/api/collections/:collection', async (req: Request, res: Response) => 
     broadcastEvent(`${colName.toUpperCase()}_CREATED`, { id, collection: colName, ...data }, societyId);
     res.status(201).json({ id: record.id, societyId: record.societyId, ...data, createdAt: record.createdAt, updatedAt: record.updatedAt });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
 app.put('/api/collections/:collection/:id', async (req: Request, res: Response) => {
   try {
-    const colName = String(req.params.collection);
-    const id = String(req.params.id);
-    const societyId = req.societyId || req.body.societyId || 'soc-gvs';
-    const { id: _, societyId: __, ...data } = req.body;
+    const colName = String(req.params.collection || '');
+    if (isBlockedChildSafetyCollection(colName)) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
 
-    const record = await prisma.entityRecord.upsert({
-      where: { id },
-      create: {
+    const nativeKey = resolveNativeCollectionModel(colName);
+    if (nativeKey && GENERIC_WRITE_PROTECTED_MODELS.has(nativeKey)) {
+      return res.status(403).json({
+        error: `Direct generic collection writes to '${colName}' are forbidden. Use dedicated API endpoints.`,
+        code: 'RESTRICTED_COLLECTION_WRITE',
+      });
+    }
+
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    if (nativeKey && !enforceNativeModelRolePolicy(req, res, nativeKey, tenant.isPlatform)) {
+      return;
+    }
+    if (!tenant.societyId) {
+      return res.status(400).json({ error: 'A valid target societyId is required.', code: 'TARGET_SOCIETY_REQUIRED' });
+    }
+    const societyId = tenant.societyId;
+    const id = String(req.params.id);
+    const { id: _, societyId: __, _audience: ___, ...data } = req.body;
+
+    const existing = await prisma.entityRecord.findUnique({ where: { id } });
+    if (existing) {
+      // Check tenant isolation FIRST so another society's protected record existence is never disclosed
+      if (!tenant.isPlatform && existing.societyId !== societyId) {
+        return res.status(404).json({ error: 'Record not found' });
+      }
+      if (isBlockedChildSafetyCollection(existing.collection)) {
+        return rejectBlockedChildSafetyCollection(res);
+      }
+      if (existing.collection !== colName) {
+        return res.status(404).json({ error: 'Record not found' });
+      }
+      const record = await prisma.entityRecord.update({
+        where: { id },
+        data: { data, updatedAt: new Date() },
+      });
+      broadcastEvent(`${colName.toUpperCase()}_UPDATED`, { id, collection: colName, ...data }, record.societyId);
+      return res.json({ id: record.id, societyId: record.societyId, ...data, createdAt: record.createdAt, updatedAt: record.updatedAt });
+    }
+
+    const record = await prisma.entityRecord.create({
+      data: {
         id,
         collection: colName,
         societyId,
         data,
-      },
-      update: {
-        data,
-        updatedAt: new Date(),
       },
     });
 
     broadcastEvent(`${colName.toUpperCase()}_UPDATED`, { id, collection: colName, ...data }, societyId);
     res.json({ id: record.id, societyId: record.societyId, ...data, createdAt: record.createdAt, updatedAt: record.updatedAt });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
+});
+
+app.patch('/api/collections/:collection/:id', async (req: Request, res: Response) => {
+  const colName = String(req.params.collection || '');
+  if (isBlockedChildSafetyCollection(colName)) {
+    return rejectBlockedChildSafetyCollection(res);
+  }
+  const nativeKey = resolveNativeCollectionModel(colName);
+  if (nativeKey && GENERIC_WRITE_PROTECTED_MODELS.has(nativeKey)) {
+    return res.status(403).json({
+      error: `Direct generic collection writes to '${colName}' are forbidden. Use dedicated API endpoints.`,
+      code: 'RESTRICTED_COLLECTION_WRITE',
+    });
+  }
+  return res.status(405).json({ error: 'Method not allowed on generic collection endpoint. Use PUT.' });
 });
 
 app.delete('/api/collections/:collection/:id', async (req: Request, res: Response) => {
   try {
-    const colName = String(req.params.collection);
+    const colName = String(req.params.collection || '');
+    if (isBlockedChildSafetyCollection(colName)) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
+
+    const nativeKey = resolveNativeCollectionModel(colName);
+    if (nativeKey && GENERIC_WRITE_PROTECTED_MODELS.has(nativeKey)) {
+      return res.status(403).json({
+        error: `Direct generic collection deletes on '${colName}' are forbidden. Use dedicated API endpoints.`,
+        code: 'RESTRICTED_COLLECTION_WRITE',
+      });
+    }
+
+    const tenant = resolveGenericCollectionSociety(req, res);
+    if (!tenant) return;
+    if (nativeKey && !enforceNativeModelRolePolicy(req, res, nativeKey, tenant.isPlatform)) {
+      return;
+    }
+
     const id = String(req.params.id);
-    await prisma.entityRecord.delete({ where: { id } }).catch(() => null);
-    broadcastEvent(`${colName.toUpperCase()}_DELETED`, { id, collection: colName });
+    const existing = await prisma.entityRecord.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+    // Check tenant isolation FIRST so another society's protected record existence is never disclosed
+    if (!tenant.isPlatform && existing.societyId !== tenant.societyId) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+    if (isBlockedChildSafetyCollection(existing.collection)) {
+      return rejectBlockedChildSafetyCollection(res);
+    }
+    if (existing.collection !== colName) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+
+    await prisma.entityRecord.delete({ where: { id } });
+    broadcastEvent(`${colName.toUpperCase()}_DELETED`, { id, collection: colName }, existing.societyId);
     res.json({ success: true, id });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
@@ -3458,9 +4518,17 @@ app.post('/api/:table/query', async (req: Request, res: Response) => {
 
   // Security 2: Role verification
   const role = (req.userRole || '').toLowerCase();
-  if (role && role !== 'admin' && !allowedRoles.includes(role)) {
+  const isPlatform = isPlatformAdmin(req);
+  if (!role || (!isPlatform && !allowedRoles.includes(role))) {
     return res.status(403).json({
       error: `Access denied. Role '${req.userRole}' cannot query '${table}'.`,
+    });
+  }
+
+  if (!isPlatform && !req.authContext?.societyId) {
+    return res.status(403).json({
+      error: 'Tenant context required: User is not linked to an active society.',
+      code: 'TENANT_CONTEXT_REQUIRED',
     });
   }
 
@@ -3470,18 +4538,27 @@ app.post('/api/:table/query', async (req: Request, res: Response) => {
       return res.status(404).json({ error: `Table delegate ${table} not found in Prisma model.` });
     }
     const where: any = {};
-    if (req.societyId && role !== 'admin') {
-      where.societyId = req.societyId;
+    if (!isPlatform) {
+      where.societyId = req.authContext!.societyId;
     }
-    const records = await delegate.findMany({ where });
+    if (table === 'entityRecord') {
+      where.collection = { notIn: BLOCKED_CHILD_SAFETY_RAW_NAMES };
+    }
+    if (table === 'emergencyIncident' && role === 'resident') {
+      where.incidentType = { not: 'CHILD_SAFETY' };
+    }
+    let records = await delegate.findMany({ where });
+    if (table === 'entityRecord' && Array.isArray(records)) {
+      records = records.filter((r: any) => !isBlockedChildSafetyCollection(String(r?.collection || '')));
+    }
     res.json(records);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: sanitizeErrorMessage(error) });
   }
 });
 
 // Serve React frontend production build
-const clientDistPath = path.resolve(__dirname, '../../dist');
+const clientDistPath = path.resolve(currentDir, '../../dist');
 app.use(express.static(clientDistPath));
 
 app.get('*', (req: Request, res: Response) => {
@@ -3491,10 +4568,29 @@ app.get('*', (req: Request, res: Response) => {
   res.sendFile(path.join(clientDistPath, 'index.html'));
 });
 
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  app.listen(PORT, () => {
+// Global Express error handler
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const statusCode = typeof err?.status === 'number' && err.status >= 400 ? err.status : 500;
+  const rawMessage = err instanceof Error ? err.stack || err.message : String(err);
+  console.error(`[Unhandled Express Error ${statusCode}]`, redactSensitiveData(rawMessage));
+  const clientMessage = sanitizeErrorMessage(err, 'An unexpected server error occurred.');
+  res.status(statusCode).json({ error: clientMessage });
+});
+
+let server: any = null;
+
+if (process.env.NODE_ENV !== 'test' && (process.env.NODE_ENV !== 'production' || !process.env.VERCEL)) {
+  server = app.listen(PORT, () => {
     console.log(`🚀 AARIZO PostgreSQL + Prisma Backend listening on port ${PORT}`);
+  });
+
+  registerGracefulShutdown({
+    server,
+    prismaClient: prisma,
+    realtimeEngineInstance: realtimeEngine,
+    timeoutMs: 10000,
   });
 }
 
+export { app };
 export default app;

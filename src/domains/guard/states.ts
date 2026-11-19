@@ -82,6 +82,10 @@ export const getVerificationLabel = (status: VisitorVerificationStatus): string 
       return 'PASS EXPIRED';
     case 'cancelled':
       return 'PASS CANCELLED BY RESIDENT';
+    case 'offline_unverified':
+      return 'OFFLINE CACHED RECORD (UNVERIFIED)';
+    default:
+      return 'UNKNOWN STATUS';
   }
 };
 

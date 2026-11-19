@@ -2,6 +2,8 @@ import type { EmergencyIncidentItem, EmergencyCategory, ChildProfileItem, Pickup
 import { realTimeSync } from '../../../services/realTimeSync';
 import { childSafetyService } from '../../../services/childSafetyService';
 import { realtimeService } from '../../../services/realtimeService';
+import { getStoredUser } from '../../../services/authStorage';
+import { ApiError } from '../../../services/apiClient';
 
 const cleanEncoding = (str: string): string => {
   return str
@@ -16,21 +18,27 @@ const cleanEncoding = (str: string): string => {
     .replace(/âœ•/g, '✕');
 };
 
+// General Emergency Incidents store (kept strictly separate from authoritative Child Safety backend)
 const STORAGE_KEY_INCIDENTS = 'aarizo_emergency_incidents_v3';
-const STORAGE_KEY_CHILDREN = 'aarizo_child_profiles_v3';
-const STORAGE_KEY_PICKUPS = 'aarizo_pickup_records_v3';
 
-// Cleanup legacy corrupted keys from previous versions
+// Cleanup obsolete legacy v2 keys from previous versions (Child Safety localStorage keys removed in Phase 3)
 try {
-  localStorage.removeItem('aarizo_emergency_incidents_v2');
-  localStorage.removeItem('aarizo_child_profiles_v2');
-  localStorage.removeItem('aarizo_pickup_records_v2');
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('aarizo_emergency_incidents_v2');
+    localStorage.removeItem('aarizo_child_profiles_v2');
+    localStorage.removeItem('aarizo_pickup_records_v2');
+  }
 } catch {}
+
+function resolveActiveSocietyId(): string {
+  const user = getStoredUser();
+  return typeof user?.societyId === 'string' ? user.societyId.trim() : '';
+}
 
 const INITIAL_INCIDENTS: EmergencyIncidentItem[] = [
   {
     id: 'inc-101',
-    societyId: 'soc-1',
+    societyId: '',
     residentId: 'res-1',
     residentName: 'Siddharth Malhotra',
     flatCode: 'A-101',
@@ -54,32 +62,9 @@ const INITIAL_INCIDENTS: EmergencyIncidentItem[] = [
   },
 ];
 
-const INITIAL_CHILDREN: ChildProfileItem[] = [
-  {
-    id: 'child-201',
-    societyId: 'soc-1',
-    childName: 'Aarav Malhotra',
-    flatCode: 'A-101',
-    guardianName: 'Siddharth Malhotra',
-    guardianPhone: '+91 98765 00000',
-    authorizedPickups: [
-      {
-        id: 'pic-1',
-        name: 'Sunita Devi (Nanny)',
-        phone: '+91 98765 44444',
-        relationship: 'Nanny',
-        idProofType: 'Aadhaar',
-        idProofNumber: 'XXXX-XXXX-1122',
-        isApproved: true,
-      },
-    ],
-    qrPassCode: 'QR-CHILD-AARAV-101',
-    createdAt: new Date().toISOString(),
-  },
-];
-
 class SafetyCommandEngine {
   private getStoredIncidents(): EmergencyIncidentItem[] {
+    if (typeof localStorage === 'undefined') return INITIAL_INCIDENTS;
     const raw = localStorage.getItem(STORAGE_KEY_INCIDENTS);
     if (!raw) {
       localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(INITIAL_INCIDENTS));
@@ -94,44 +79,15 @@ class SafetyCommandEngine {
   }
 
   private saveIncidents(incidents: EmergencyIncidentItem[]) {
-    localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(incidents));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY_INCIDENTS, JSON.stringify(incidents));
+    }
     realTimeSync.publish('EMERGENCY_ALERTS', { timestamp: new Date().toISOString() });
   }
 
-  private getStoredChildren(): ChildProfileItem[] {
-    const raw = localStorage.getItem(STORAGE_KEY_CHILDREN);
-    if (!raw) {
-      localStorage.setItem(STORAGE_KEY_CHILDREN, JSON.stringify(INITIAL_CHILDREN));
-      return INITIAL_CHILDREN;
-    }
-    try {
-      const sanitized = cleanEncoding(raw);
-      return JSON.parse(sanitized);
-    } catch {
-      return INITIAL_CHILDREN;
-    }
-  }
-
-  private saveChildren(children: ChildProfileItem[]) {
-    localStorage.setItem(STORAGE_KEY_CHILDREN, JSON.stringify(children));
-    realTimeSync.publish('CHILD_SAFETY_UPDATED', { timestamp: new Date().toISOString() });
-  }
-
-  private getStoredPickups(): PickupRecord[] {
-    const raw = localStorage.getItem(STORAGE_KEY_PICKUPS);
-    if (!raw) return [];
-    try {
-      const sanitized = cleanEncoding(raw);
-      return JSON.parse(sanitized);
-    } catch {
-      return [];
-    }
-  }
-
-  private savePickups(pickups: PickupRecord[]) {
-    localStorage.setItem(STORAGE_KEY_PICKUPS, JSON.stringify(pickups));
-    realTimeSync.publish('CHILD_SAFETY_UPDATED', { timestamp: new Date().toISOString() });
-  }
+  // =========================================================================
+  // GENERAL EMERGENCY INCIDENTS API (Preserved separately from Child Safety)
+  // =========================================================================
 
   public getIncidents(): EmergencyIncidentItem[] {
     return this.getStoredIncidents();
@@ -149,10 +105,11 @@ class SafetyCommandEngine {
     const incidents = this.getStoredIncidents();
     const newId = `inc-${Date.now()}`;
     const timestamp = new Date().toISOString();
+    const activeSocietyId = resolveActiveSocietyId();
 
     const newIncident: EmergencyIncidentItem = {
       id: newId,
-      societyId: 'soc-1',
+      societyId: activeSocietyId,
       residentId,
       residentName,
       flatCode,
@@ -181,7 +138,7 @@ class SafetyCommandEngine {
     realtimeService.publish(
       'EMERGENCY_ALERTS',
       newIncident,
-      'soc-gvs',
+      activeSocietyId,
       'RESIDENT',
       residentName
     );
@@ -196,6 +153,7 @@ class SafetyCommandEngine {
 
     const timestamp = new Date().toISOString();
     const incident = incidents[index];
+    const activeSocietyId = resolveActiveSocietyId();
 
     const updated: EmergencyIncidentItem = {
       ...incident,
@@ -221,7 +179,7 @@ class SafetyCommandEngine {
     realtimeService.publish(
       'EMERGENCY_ALERTS',
       { type: 'INCIDENT_ACKNOWLEDGED', incident: updated },
-      'soc-gvs',
+      activeSocietyId,
       'STAFF',
       acknowledgedBy
     );
@@ -236,6 +194,7 @@ class SafetyCommandEngine {
 
     const timestamp = new Date().toISOString();
     const incident = incidents[index];
+    const activeSocietyId = resolveActiveSocietyId();
 
     const updated: EmergencyIncidentItem = {
       ...incident,
@@ -261,7 +220,7 @@ class SafetyCommandEngine {
     realtimeService.publish(
       'EMERGENCY_ALERTS',
       { type: 'INCIDENT_RESPONDER_ASSIGNED', incident: updated },
-      'soc-gvs',
+      activeSocietyId,
       'STAFF',
       performedBy
     );
@@ -276,6 +235,7 @@ class SafetyCommandEngine {
 
     const timestamp = new Date().toISOString();
     const incident = incidents[index];
+    const activeSocietyId = resolveActiveSocietyId();
 
     const updated: EmergencyIncidentItem = {
       ...incident,
@@ -300,7 +260,7 @@ class SafetyCommandEngine {
     realtimeService.publish(
       'EMERGENCY_ALERTS',
       { type: 'INCIDENT_RESOLVED', incident: updated },
-      'soc-gvs',
+      activeSocietyId,
       'STAFF',
       performedBy
     );
@@ -308,16 +268,24 @@ class SafetyCommandEngine {
     return updated;
   }
 
-  // --- CHILD SAFETY API ---
+  // =========================================================================
+  // DEPRECATED CHILD SAFETY COMPATIBILITY ADAPTERS (Retained until Phase 4/7)
+  // - Eliminates split-brain `aarizo_child_profiles_v3` / `aarizo_pickup_records_v3`
+  // - Eliminates hardcoded `'soc-gvs'` fallback
+  // - Read adapters project strictly from authoritative `childSafetyService` memory snapshot
+  // - Write/verify adapters fail closed (never write localStorage or fabricate success)
+  // =========================================================================
+
+  /** @deprecated Use `await childSafetyService.listChildren()` (Phase 4 cutover). */
   public getChildren(): ChildProfileItem[] {
-    const canonicalChildren = childSafetyService.getChildren('soc-gvs');
+    const canonicalChildren = childSafetyService.getChildren();
     return canonicalChildren.map(c => ({
       id: c.id,
       societyId: c.societyId,
       childName: c.fullName,
       flatCode: c.flatNumber,
       guardianName: c.guardians[0]?.name || 'Guardian',
-      guardianPhone: c.guardians[0]?.phone || '+91 98765 43210',
+      guardianPhone: c.guardians[0]?.phone || '',
       authorizedPickups: c.authorizedPickups.map(ap => ({
         id: ap.id,
         name: ap.name,
@@ -328,106 +296,71 @@ class SafetyCommandEngine {
         photoUrl: ap.photoUrl,
         isApproved: ap.status === 'ACTIVE',
       })),
-      qrPassCode: `QR-CHILD-${c.fullName.toUpperCase().replace(/\s+/g, '')}-${c.flatNumber}`,
+      // Never fabricate deterministic QR pass codes client-side; passes are server-issued only
+      qrPassCode: '',
       createdAt: c.createdAt,
     }));
   }
 
+  /** @deprecated Use `await childSafetyService.listExitLogs()` (Phase 4/5 cutover). */
   public getPickupRecords(): PickupRecord[] {
-    return this.getStoredPickups();
+    return childSafetyService.getPickupLogs().map(log => ({
+      id: log.id,
+      childId: log.childId,
+      childName: log.childName,
+      flatCode: log.flatNumber,
+      pickupPersonName: log.pickupPersonName,
+      pickupPersonPhone: log.pickupPersonPhone,
+      verifiedByGuard: log.securityGuardId,
+      timestamp: log.timestamp,
+      status: log.status === 'ALLOWED' ? 'GATE_CLEARED' : 'DENIED',
+    }));
   }
 
-  public addChildProfile(childName: string, flatCode: string, guardianName: string, guardianPhone: string): ChildProfileItem {
-    const children = this.getStoredChildren();
-    const newChild: ChildProfileItem = {
-      id: `child-${Date.now()}`,
-      societyId: 'soc-1',
-      childName,
-      flatCode,
-      guardianName,
-      guardianPhone,
-      authorizedPickups: [],
-      qrPassCode: `QR-CHILD-${childName.toUpperCase().replace(/\s+/g, '')}-${flatCode}`,
-      createdAt: new Date().toISOString(),
-    };
-    children.unshift(newChild);
-    this.saveChildren(children);
-    return newChild;
-  }
-
-  public addAuthorizedPickup(childId: string, pickup: Omit<AuthorizedPickupPerson, 'id' | 'isApproved'>): ChildProfileItem | null {
-    const children = this.getStoredChildren();
-    const index = children.findIndex(c => c.id === childId);
-    if (index === -1) return null;
-
-    const newPickup: AuthorizedPickupPerson = {
-      ...pickup,
-      id: `pic-${Date.now()}`,
-      isApproved: true,
-    };
-
-    const updated: ChildProfileItem = {
-      ...children[index],
-      authorizedPickups: [...children[index].authorizedPickups, newPickup],
-    };
-
-    children[index] = updated;
-    this.saveChildren(children);
-    return updated;
-  }
-
-  public verifyChildPickupAtGate(childNameOrQR: string, pickupPersonName: string, guardName: string): { isValid: boolean; child?: ChildProfileItem; reason?: string } {
-    const children = this.getStoredChildren();
-    const child = children.find(
-      c => c.childName.toLowerCase().includes(childNameOrQR.toLowerCase()) || c.qrPassCode === childNameOrQR
-    );
-
-    if (!child) {
-      return { isValid: false, reason: `No registered child found matching "${childNameOrQR}".` };
-    }
-
-    const authorized = child.authorizedPickups.find(
-      (p: AuthorizedPickupPerson) => p.name.toLowerCase().includes(pickupPersonName.toLowerCase()) && p.isApproved
-    );
-
-    const pickups = this.getStoredPickups();
-    const timestamp = new Date().toISOString();
-
-    if (!authorized) {
-      pickups.unshift({
-        id: `pick-${Date.now()}`,
-        childId: child.id,
-        childName: child.childName,
-        flatCode: child.flatCode,
-        pickupPersonName,
-        pickupPersonPhone: 'UNAUTHORIZED',
-        verifiedByGuard: guardName,
-        timestamp,
-        status: 'DENIED',
-      });
-      this.savePickups(pickups);
-
-      return {
-        isValid: false,
-        child,
-        reason: `DENIED: Person "${pickupPersonName}" is NOT in guardian's approved pickup list. Guardian notified!`,
-      };
-    }
-
-    pickups.unshift({
-      id: `pick-${Date.now()}`,
-      childId: child.id,
-      childName: child.childName,
-      flatCode: child.flatCode,
-      pickupPersonName: authorized.name,
-      pickupPersonPhone: authorized.phone,
-      verifiedByGuard: guardName,
-      timestamp,
-      status: 'GATE_CLEARED',
+  /** @deprecated Disabled localStorage write. Use `await childSafetyService.createChildProfileAsync()`. */
+  public addChildProfile(
+    _childName: string,
+    _flatCode: string,
+    _guardianName: string,
+    _guardianPhone: string
+  ): ChildProfileItem {
+    throw new ApiError({
+      status: 0,
+      code: 'LEGACY_SYNC_API_DEPRECATED',
+      kind: 'VALIDATION',
+      endpoint: '/children#addChildProfile',
+      message: 'Local child profile creation is disabled. Use authoritative async childSafetyService.createChildProfileAsync().',
     });
-    this.savePickups(pickups);
+  }
 
-    return { isValid: true, child };
+  /** @deprecated Disabled localStorage write (raw idProofNumber forbidden). Use `await childSafetyService.addAuthorizedPickup()`. */
+  public addAuthorizedPickup(
+    _childId: string,
+    _pickup: Omit<AuthorizedPickupPerson, 'id' | 'isApproved'>
+  ): ChildProfileItem | null {
+    throw new ApiError({
+      status: 0,
+      code: 'LEGACY_SYNC_API_DEPRECATED',
+      kind: 'VALIDATION',
+      endpoint: '/children#addAuthorizedPickup',
+      message: 'Local authorized pickup creation is disabled. Use authoritative async childSafetyService.addAuthorizedPickup().',
+    });
+  }
+
+  /**
+   * @deprecated Local gate verification is disabled (fail-closed).
+   * Use authoritative server verification `await childSafetyService.verifyGatePass()`.
+   */
+  public verifyChildPickupAtGate(
+    _childNameOrQR: string,
+    _pickupPersonName: string,
+    _guardName: string
+  ): { isValid: false; child?: ChildProfileItem; reason: string } {
+    return {
+      isValid: false,
+      reason:
+        'Local gate verification is disabled. Gate exit requires online server verification via childSafetyService.verifyGatePass().',
+    };
   }
 }
 

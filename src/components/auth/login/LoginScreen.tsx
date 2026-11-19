@@ -120,7 +120,7 @@ export const LoginScreen: React.FC = () => {
             status: 'ACTIVE',
             avatarUrl: `https://images.unsplash.com/photo-1534528741775?auto=format&fit=crop&w=250&q=80`,
           };
-          loginWithProfile(userProfile);
+          loginWithProfile(userProfile, res.token);
           setLoading(false);
 
           if (userRole === 'secretary') navigate('/admin', { replace: true });

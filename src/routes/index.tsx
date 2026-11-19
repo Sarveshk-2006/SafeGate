@@ -132,9 +132,11 @@ export const AppRoutes: React.FC = () => {
 
   return (
     <Routes>
-      {/* Developer Database Studio */}
-      <Route path="/dev/database" element={<DeveloperDatabaseStudio />} />
-      <Route path="/dev/db" element={<DeveloperDatabaseStudio />} />
+      {/* Developer Database Studio — Restricted to Platform Admin Only */}
+      <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+        <Route path="/dev/database" element={<DeveloperDatabaseStudio />} />
+        <Route path="/dev/db" element={<DeveloperDatabaseStudio />} />
+      </Route>
 
       {/* Public Routes */}
       <Route path="/login" element={<LoginPage />} />

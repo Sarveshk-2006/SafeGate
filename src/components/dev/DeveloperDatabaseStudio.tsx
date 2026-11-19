@@ -178,43 +178,55 @@ export const DeveloperDatabaseStudio: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handleQuickAddVisitorPass = () => {
+  const handleQuickAddVisitorPass = async () => {
     triggerHaptic('medium');
-    const newPass = visitorService.createVisitorPass(
-      {
-        societyId: 'soc-gvs',
-        residentId: 'res-1',
-        residentName: 'Developer Test Resident',
-        flatCode: 'B-1204',
-        towerName: 'Tower B',
-        visitorName: `Realtime Guest #${Math.floor(Math.random() * 100)}`,
-        visitorPhone: '9876543210',
-        category: 'GUEST',
-        passLifecycle: 'ONE_TIME',
-        validFrom: new Date().toISOString(),
-        validUntil: new Date(Date.now() + 86400000).toISOString(),
-        purpose: 'Developer Real-Time Verification',
-      },
-      { id: 'dev-1', name: 'Developer Studio', role: 'ADMIN' }
-    );
-    refreshData();
-    setSelectedRecord(newPass);
+    try {
+      const newPass = await visitorService.createVisitorPass(
+        {
+          societyId: 'soc-gvs',
+          residentId: 'res-1',
+          residentName: 'Developer Test Resident',
+          flatCode: 'B-1204',
+          towerName: 'Tower B',
+          visitorName: `Realtime Guest #${Math.floor(Math.random() * 100)}`,
+          visitorPhone: '9876543210',
+          category: 'GUEST',
+          passLifecycle: 'ONE_TIME',
+          validFrom: new Date().toISOString(),
+          validUntil: new Date(Date.now() + 86400000).toISOString(),
+          purpose: 'Developer Real-Time Verification',
+        },
+        { id: 'dev-1', name: 'Developer Studio', role: 'ADMIN' }
+      );
+      refreshData();
+      setSelectedRecord(newPass);
+    } catch (err: any) {
+      console.error('Quick Add Visitor Pass failed:', err);
+    }
   };
 
-  const handleQuickCheckInPass = (passId: string) => {
+  const handleQuickCheckInPass = async (passId: string) => {
     triggerHaptic('medium');
-    visitorService.checkInVisitor(
-      passId,
-      { gateName: 'Main Gate 1', officerName: 'Security Automation' },
-      { id: 'dev-1', name: 'Developer Studio', role: 'ADMIN' }
-    );
-    refreshData();
+    try {
+      await visitorService.checkInVisitor(
+        passId,
+        { gateName: 'Main Gate 1', officerName: 'Security Automation' },
+        { id: 'dev-1', name: 'Developer Studio', role: 'ADMIN' }
+      );
+      refreshData();
+    } catch (err: any) {
+      console.error('Quick Check In failed:', err);
+    }
   };
 
-  const handleQuickCheckOutPass = (passId: string) => {
+  const handleQuickCheckOutPass = async (passId: string) => {
     triggerHaptic('medium');
-    visitorService.checkOutVisitor(passId, { id: 'dev-1', name: 'Developer Studio', role: 'ADMIN' });
-    refreshData();
+    try {
+      await visitorService.checkOutVisitor(passId, { id: 'dev-1', name: 'Developer Studio', role: 'ADMIN' });
+      refreshData();
+    } catch (err: any) {
+      console.error('Quick Check Out failed:', err);
+    }
   };
 
   return (

@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from './prisma.js';
+import { hashPassword, hashPasswordScrypt, generateSalt } from './crypto.js';
 
 export interface ProvisionSocietyInput {
   societyName: string;
@@ -60,10 +61,17 @@ export class UniversalProvisioningService {
   }
 
   /**
-   * Hashes a password using SHA-256 with a unique salt
+   * Hashes a password using scrypt or legacy HMAC-SHA256 with a unique salt
    */
-  public static hashPassword(password: string, salt: string): string {
-    return crypto.createHmac('sha256', salt).update(password).digest('hex');
+  public static hashPassword(password: string, salt: string, algorithm: 'scrypt' | 'hmac-sha256' = 'hmac-sha256'): string {
+    return hashPassword(password, salt, algorithm);
+  }
+
+  /**
+   * Hashes a password using secure scrypt (standard for SafeGate 2.0 provisioning)
+   */
+  public static hashPasswordScrypt(password: string, salt: string): string {
+    return hashPasswordScrypt(password, salt);
   }
 
   /**
@@ -104,8 +112,8 @@ export class UniversalProvisioningService {
       throw new Error(`A user with email ${secretaryEmail} or phone ${secretaryPhone} already exists.`);
     }
 
-    const salt = crypto.randomBytes(16).toString('hex');
-    const passwordHash = this.hashPassword(secretaryPassword, salt);
+    const salt = generateSalt(16);
+    const passwordHash = this.hashPasswordScrypt(secretaryPassword, salt);
     const eventId = `evt_${crypto.randomUUID()}`;
 
     // 3. Atomic Multi-Entity Provisioning
@@ -283,8 +291,8 @@ export class UniversalProvisioningService {
       throw new Error(`A user with email ${email} or phone ${phone} already exists.`);
     }
 
-    const salt = crypto.randomBytes(16).toString('hex');
-    const passwordHash = this.hashPassword(password, salt);
+    const salt = generateSalt(16);
+    const passwordHash = this.hashPasswordScrypt(password, salt);
     const eventId = `evt_${crypto.randomUUID()}`;
 
     // 4. Atomic Transaction for Role-Specific Provisioning

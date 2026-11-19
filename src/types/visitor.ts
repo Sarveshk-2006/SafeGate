@@ -93,6 +93,10 @@ export interface PassValidationResult {
   pass?: SmartVisitorPass;
   blacklistMatch?: BlacklistEntry;
   isLockdownActive?: boolean;
+  isOffline?: boolean;
+  isAuthoritative?: boolean;
+  canAuthorizeEntry?: boolean;
+  verificationSource?: 'server' | 'offline_cache';
 }
 
 export interface VisitorAnalyticsData {

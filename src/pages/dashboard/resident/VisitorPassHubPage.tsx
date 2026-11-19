@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Users,
@@ -72,28 +72,62 @@ export const VisitorPassHubPage: React.FC = () => {
   const [groupCount, setGroupCount] = useState<number>(1);
   const [visitorPhotoUrl, setVisitorPhotoUrl] = useState('');
 
-  const refreshData = () => {
-    setPasses(filterMyPasses(visitorService.getPasses(currentSocietyId)));
-  };
+  const latestRequestIdRef = useRef(0);
+  const debounceTimerRef = useRef<any>(null);
+
+  const performAuthoritativeRefresh = useCallback(async () => {
+    const requestId = ++latestRequestIdRef.current;
+    try {
+      const livePasses = await visitorService.fetchPasses(currentSocietyId);
+      // Stale response guard: only update if this is the latest in-flight request
+      if (latestRequestIdRef.current === requestId) {
+        setPasses(filterMyPasses(livePasses));
+      }
+    } catch {
+      if (latestRequestIdRef.current === requestId) {
+        setPasses(filterMyPasses(visitorService.getPasses(currentSocietyId)));
+      }
+    }
+  }, [currentSocietyId, currentResidentId, currentFlat]);
+
+  const scheduleDebouncedRefresh = useCallback((delayMs = 300) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      performAuthoritativeRefresh();
+    }, delayMs);
+  }, [performAuthoritativeRefresh]);
+
+  const refreshData = performAuthoritativeRefresh;
 
   useEffect(() => {
-    refreshData();
+    let isMounted = true;
+    performAuthoritativeRefresh();
 
     const unsubFirestore = visitorService.subscribePasses(currentSocietyId, (livePasses) => {
-      if (livePasses && livePasses.length > 0) {
+      if (isMounted && livePasses && livePasses.length > 0) {
         setPasses(filterMyPasses(livePasses));
       }
     });
 
-    const unsub = realtimeService.subscribe('*', () => {
-      refreshData();
+    const unsub = realtimeService.subscribe('*', (event) => {
+      if (!isMounted) return;
+      const topic = event?.topic || event?.type || '';
+      if (!topic || topic.startsWith('VISITOR_') || topic === '*') {
+        scheduleDebouncedRefresh(300);
+      }
     });
 
     return () => {
+      isMounted = false;
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
       unsubFirestore();
       unsub();
     };
-  }, [currentSocietyId, currentResidentId, currentFlat]);
+  }, [currentSocietyId, currentResidentId, currentFlat, performAuthoritativeRefresh, scheduleDebouncedRefresh]);
 
   const openCreateWithCategory = (cat: VisitorCategory) => {
     setCategory(cat);
@@ -103,47 +137,55 @@ export const VisitorPassHubPage: React.FC = () => {
     setIsCreateModalOpen(true);
   };
 
-  const handleCreatePass = (e: React.FormEvent) => {
+  const handleCreatePass = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!visitorName || !visitorPhone) return;
 
-    const newPass = visitorService.createVisitorPass(
-      {
-        societyId: currentSocietyId,
-        residentId: currentResidentId,
-        residentName,
-        flatCode: currentFlat,
-        towerName: 'Tower B',
-        visitorName,
-        visitorPhone,
-        category,
-        passLifecycle,
-        companyName,
-        vehicleNumber,
-        purpose,
-        groupCount: Number(groupCount),
-        photoUrl: visitorPhotoUrl || undefined,
-      },
-      { id: currentResidentId, name: residentName, role: 'resident' }
-    );
+    try {
+      const newPass = await visitorService.createVisitorPass(
+        {
+          societyId: currentSocietyId,
+          residentId: currentResidentId,
+          residentName,
+          flatCode: currentFlat,
+          towerName: 'Tower B',
+          visitorName,
+          visitorPhone,
+          category,
+          passLifecycle,
+          companyName,
+          vehicleNumber,
+          purpose,
+          groupCount: Number(groupCount),
+          photoUrl: visitorPhotoUrl || undefined,
+        },
+        { id: currentResidentId, name: residentName, role: 'resident' }
+      );
 
-    refreshData();
-    setIsCreateModalOpen(false);
-    setSelectedPassForQR(newPass);
+      await refreshData();
+      setIsCreateModalOpen(false);
+      setSelectedPassForQR(newPass);
 
-    setVisitorName('');
-    setVisitorPhone('');
-    setCompanyName('');
-    setVehicleNumber('');
-    setPurpose('');
-    setGroupCount(1);
-    setVisitorPhotoUrl('');
+      setVisitorName('');
+      setVisitorPhone('');
+      setCompanyName('');
+      setVehicleNumber('');
+      setPurpose('');
+      setGroupCount(1);
+      setVisitorPhotoUrl('');
+    } catch (err: any) {
+      alert(err?.message || 'Failed to create visitor pass');
+    }
   };
 
-  const handleRevoke = (passId: string) => {
+  const handleRevoke = async (passId: string) => {
     if (window.confirm('Are you sure you want to revoke this gate pass? Security will deny entry.')) {
-      visitorService.revokePass(passId, { id: currentResidentId, name: residentName, role: 'resident' });
-      refreshData();
+      try {
+        await visitorService.revokePass(passId, { id: currentResidentId, name: residentName, role: 'resident' });
+        await refreshData();
+      } catch (err: any) {
+        alert(err?.message || 'Failed to revoke visitor pass');
+      }
     }
   };
 

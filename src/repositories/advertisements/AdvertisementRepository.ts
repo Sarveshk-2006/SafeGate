@@ -1,5 +1,6 @@
 import { BaseRepository } from '../BaseRepository';
 import type { Advertisement } from '../../types/advertisement';
+import { authenticatedFetch } from '../../services/authStorage';
 
 export type { Advertisement };
 
@@ -22,7 +23,7 @@ export class AdvertisementRepository extends BaseRepository<Advertisement> {
 
   public async recordImpression(adId: string): Promise<void> {
     try {
-      await fetch(`/api/advertisements/${adId}/view`, { method: 'POST' });
+      await authenticatedFetch(`/api/advertisements/${adId}/view`, { method: 'POST' });
     } catch (err) {
       console.warn(`[AdvertisementRepository] Failed to record impression for ${adId}:`, err);
     }
@@ -30,7 +31,7 @@ export class AdvertisementRepository extends BaseRepository<Advertisement> {
 
   public async recordClick(adId: string): Promise<void> {
     try {
-      await fetch(`/api/advertisements/${adId}/click`, { method: 'POST' });
+      await authenticatedFetch(`/api/advertisements/${adId}/click`, { method: 'POST' });
     } catch (err) {
       console.warn(`[AdvertisementRepository] Failed to record click for ${adId}:`, err);
     }

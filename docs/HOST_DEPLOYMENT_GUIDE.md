@@ -20,6 +20,12 @@ If hosting on a server with Docker installed:
 docker compose up -d --build
 ```
 
+> [!NOTE]
+> The default Docker Compose setup initializes production tables and RLS policies (`01_schema.sql`, `02_rls_policies.sql`). Demo seed data (`03_seed.sql`) is omitted by default to ensure production databases are never initialized with demo credentials.
+> For local development testing with demo personas, use the local development override:
+> `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
+> or execute the Prisma seed script: `npm --prefix server run seed`.
+
 ### Active Services:
 - **Application (React + Node.js + Prisma)**: `http://<your-host-ip>:5000`
 - **Database Web Admin (pgweb)**: `http://<your-host-ip>:8081`
@@ -38,12 +44,16 @@ sudo -u postgres psql -c "CREATE USER aarizo_admin WITH PASSWORD 'aarizo_secure_
 sudo -u postgres psql -c "CREATE DATABASE aarizo_community OWNER aarizo_admin;"
 ```
 
-### Step 2: Initialize Database
+### Step 2: Initialize Database (Production DDL & Security Policies)
 ```bash
+# Execute production schema and RLS policies
 psql -U aarizo_admin -d aarizo_community -f scripts/postgres/01_schema.sql
 psql -U aarizo_admin -d aarizo_community -f scripts/postgres/02_rls_policies.sql
-psql -U aarizo_admin -d aarizo_community -f scripts/postgres/03_seed.sql
 ```
+
+> [!CAUTION]
+> **DO NOT** execute `scripts/postgres/03_seed.sql` against production or staging databases. `03_seed.sql` contains pre-computed demo accounts and credentials intended strictly for local development and unit testing. `03_seed.sql` contains an active fail-closed PL/pgSQL guard that halts execution unless `aarizo.environment` is explicitly set to an authorized development environment.
+> For production provisioning, create real administrator credentials using the secure API provisioning endpoint (`POST /api/auth/provision`) or the server seed CLI with required production environment variables (`SEED_ADMIN_PASSWORD`).
 
 ### Step 3: Build & Start with PM2
 ```bash

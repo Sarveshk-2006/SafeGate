@@ -1,37 +1,200 @@
 import { prisma } from './prisma.js';
+import { generateSalt, hashPasswordScrypt } from './crypto.js';
+
+/**
+ * Determines whether the current process is running in an explicitly authorized local development or test environment.
+ * Any other environment (production, staging, preview, CI, cloud hosting, or missing/unknown NODE_ENV)
+ * is classified as non-development and MUST supply explicit credentials.
+ */
+export function isExplicitLocalDevOrTestEnv(): boolean {
+  // Check common deployment / CI platform indicators
+  if (
+    process.env.CI === 'true' ||
+    process.env.CI === '1' ||
+    Boolean(process.env.VERCEL) ||
+    Boolean(process.env.RENDER) ||
+    Boolean(process.env.RAILWAY_ENVIRONMENT) ||
+    Boolean(process.env.FLY_APP_NAME) ||
+    Boolean(process.env.KUBERNETES_SERVICE_HOST) ||
+    Boolean(process.env.AWS_EXECUTION_ENV)
+  ) {
+    return false;
+  }
+
+  const rawNodeEnv = (process.env.NODE_ENV || '').toLowerCase().trim();
+
+  // If NODE_ENV indicates production, staging, preview, or is empty/missing/unknown -> NOT authorized for dev fallback
+  if (
+    !rawNodeEnv ||
+    rawNodeEnv === 'production' ||
+    rawNodeEnv === 'prod' ||
+    rawNodeEnv === 'staging' ||
+    rawNodeEnv === 'preview' ||
+    rawNodeEnv === 'live' ||
+    rawNodeEnv === 'qa'
+  ) {
+    return false;
+  }
+
+  // ONLY explicitly 'development' or 'test' (or 'dev') without CI/deployment markers
+  return rawNodeEnv === 'development' || rawNodeEnv === 'dev' || rawNodeEnv === 'test';
+}
+
+/**
+ * Validates whether destructive database operations are explicitly authorized.
+ * Refuses destructive cleaning in all production, staging, preview, CI, and unknown environments.
+ * Even in local development, requires explicit dual confirmation.
+ */
+export function isDestructiveCleanAuthorized(argv: string[] = process.argv): boolean {
+  const hasCleanFlag = argv.includes('--force-clean') || process.env.SEED_FORCE_CLEAN === 'true';
+  if (!hasCleanFlag) {
+    return false;
+  }
+
+  // Destructive cleaning is strictly forbidden outside an authorized local dev/test context
+  if (!isExplicitLocalDevOrTestEnv()) {
+    const rawEnv = (process.env.NODE_ENV || 'UNKNOWN').trim();
+    throw new Error(
+      `[CRITICAL] Destructive database purge rejected: Environment "${rawEnv}" is not an authorized local development environment. ` +
+      `Destructive operations (--force-clean / SEED_FORCE_CLEAN) cannot be executed in production-like, staging, CI, or unknown environments.`
+    );
+  }
+
+  // Even in local development, require an explicit affirmative confirmation token to prevent accidental wipe
+  const confirmClean =
+    argv.includes('--confirm-delete-all-data') ||
+    process.env.CONFIRM_DESTRUCTIVE_CLEAN === 'YES_I_AM_SURE';
+
+  if (!confirmClean) {
+    throw new Error(
+      `[SECURITY] Destructive database purge requested but unconfirmed. ` +
+      `To prevent accidental data loss in local development, you must also pass --confirm-delete-all-data ` +
+      `or set CONFIRM_DESTRUCTIVE_CLEAN=YES_I_AM_SURE.`
+    );
+  }
+
+  return true;
+}
+
+/**
+ * Resolves seed password for a canonical role using explicit, secure configuration.
+ * Fails closed in production, staging, CI, preview, and unknown environments.
+ */
+export function getSeedPasswordForRole(role: string): string {
+  // 1. Role-specific explicit credential override (highest priority)
+  const roleEnvKey = `SEED_${role.toUpperCase()}_PASSWORD`;
+  const rolePassword = process.env[roleEnvKey];
+  if (rolePassword && rolePassword.trim().length >= 8) {
+    return rolePassword.trim();
+  }
+
+  // 2. Global seed default credential override
+  const defaultEnvPassword = process.env.SEED_DEFAULT_PASSWORD;
+  if (defaultEnvPassword && defaultEnvPassword.trim().length >= 8) {
+    return defaultEnvPassword.trim();
+  }
+
+  // 3. Strict fail-closed environment check: refuse dev fallback in production-like or unknown environments
+  if (!isExplicitLocalDevOrTestEnv()) {
+    const rawEnv = (process.env.NODE_ENV || 'UNKNOWN').trim();
+    throw new Error(
+      `[SECURITY] Seed credential provisioning rejected: Environment "${rawEnv}" is not an authorized local development environment. ` +
+      `Predictable default credentials are forbidden. Provide ${roleEnvKey} or SEED_DEFAULT_PASSWORD via environment variables (minimum 8 characters).`
+    );
+  }
+
+  // 4. Authorized local development fallback
+  const devPassword = process.env.DEV_SEED_PASSWORD;
+  if (devPassword && devPassword.trim().length >= 8) {
+    return devPassword.trim();
+  }
+
+  return 'dwellora@2026';
+}
+
+/**
+ * Resolves or creates user credentials idempotently.
+ * Preserves existing database passwords when re-seeding.
+ */
+export async function resolveSeedCredentials(
+  userOrId: string | { id?: string; passwordHash?: string | null; salt?: string | null } | null,
+  role: string
+): Promise<{ passwordHash: string; salt: string }> {
+  if (userOrId && typeof userOrId === 'object') {
+    if (userOrId.passwordHash && userOrId.salt) {
+      return { passwordHash: userOrId.passwordHash, salt: userOrId.salt };
+    }
+  } else if (typeof userOrId === 'string') {
+    try {
+      const existing = await prisma.user.findUnique({
+        where: { id: userOrId },
+        select: { passwordHash: true, salt: true },
+      });
+      if (existing?.passwordHash && existing?.salt) {
+        return { passwordHash: existing.passwordHash, salt: existing.salt };
+      }
+    } catch {
+      // If database query fails, fall through to fresh credential generation
+    }
+  }
+
+  const seedPassword = getSeedPasswordForRole(role);
+  const salt = generateSalt(16);
+  const passwordHash = hashPasswordScrypt(seedPassword, salt);
+  return { passwordHash, salt };
+}
 
 async function seed() {
   console.log('🌱 Starting comprehensive AARIZO database seed...');
 
-  // 1. Clean existing records in reverse dependency order
-  console.log('🧹 Purging existing database tables...');
-  await prisma.auditLog.deleteMany({});
-  await prisma.advertisement.deleteMany({});
-  await prisma.notification.deleteMany({});
-  await prisma.payment.deleteMany({});
-  await prisma.emergencyIncident.deleteMany({});
-  await prisma.maintenanceTicket.deleteMany({});
-  await prisma.billingInvoice.deleteMany({});
-  await prisma.billingCycle.deleteMany({});
-  await prisma.parcel.deleteMany({});
-  await prisma.visitorPass.deleteMany({});
-  await prisma.vehicle.deleteMany({});
-  await prisma.familyMember.deleteMany({});
-  await prisma.parkingSlot.deleteMany({});
-  await prisma.amenity.deleteMany({});
-  await prisma.domesticWorker.deleteMany({});
-  await prisma.staff.deleteMany({});
-  await prisma.vendor.deleteMany({});
-  await prisma.resident.deleteMany({});
-  await prisma.user.deleteMany({});
-  await prisma.flat.deleteMany({});
-  await prisma.tower.deleteMany({});
-  await prisma.society.deleteMany({});
+  // Safe idempotent cleanup: Only purge if explicitly authorized via dual confirmation in local dev
+  const shouldClean = isDestructiveCleanAuthorized();
+  if (shouldClean) {
+    console.log('🧹 Explicit dual-confirmed clean authorized: Purging existing database tables...');
+    await prisma.auditLog.deleteMany({});
+    await prisma.advertisement.deleteMany({});
+    await prisma.notification.deleteMany({});
+    await prisma.payment.deleteMany({});
+    await prisma.emergencyIncident.deleteMany({});
+    await prisma.maintenanceTicket.deleteMany({});
+    await prisma.billingInvoice.deleteMany({});
+    await prisma.billingCycle.deleteMany({});
+    await prisma.parcel.deleteMany({});
+    await prisma.visitorPass.deleteMany({});
+    await prisma.vehicle.deleteMany({});
+    await prisma.familyMember.deleteMany({});
+    await prisma.parkingSlot.deleteMany({});
+    await prisma.amenity.deleteMany({});
+    await prisma.domesticWorker.deleteMany({});
+    await prisma.staff.deleteMany({});
+    await prisma.vendor.deleteMany({});
+    await prisma.resident.deleteMany({});
+    await prisma.user.deleteMany({});
+    await prisma.flat.deleteMany({});
+    await prisma.tower.deleteMany({});
+    await prisma.society.deleteMany({});
+  } else {
+    console.log('🔄 Running in safe idempotent mode (preserving existing users and credentials)...');
+  }
 
   // 2. Societies
   console.log('🏢 Seeding Societies...');
-  const socGVS = await prisma.society.create({
-    data: {
+  const socGVS = await prisma.society.upsert({
+    where: { id: 'soc-gvs' },
+    update: {
+      name: 'Green Valley Society',
+      code: 'GVS-01',
+      city: 'Mumbai',
+      address: 'Plot 42, Off Link Road, Bandra West',
+      pincode: '400050',
+      totalTowers: 3,
+      totalFlats: 240,
+      establishedYear: 2020,
+      gateCount: 2,
+      amenitiesCount: 6,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'soc-gvs',
       name: 'Green Valley Society',
       code: 'GVS-01',
@@ -52,8 +215,22 @@ async function seed() {
     },
   });
 
-  const socRoyal = await prisma.society.create({
-    data: {
+  const socRoyal = await prisma.society.upsert({
+    where: { id: 'soc-royal' },
+    update: {
+      name: 'Royal Palms Residency',
+      code: 'RPR-02',
+      city: 'Mumbai',
+      address: 'Central Avenue, Powai',
+      pincode: '400076',
+      totalTowers: 5,
+      totalFlats: 500,
+      establishedYear: 2022,
+      gateCount: 3,
+      amenitiesCount: 8,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'soc-royal',
       name: 'Royal Palms Residency',
       code: 'RPR-02',
@@ -71,8 +248,18 @@ async function seed() {
 
   // 3. Towers
   console.log('🏗️ Seeding Towers...');
-  const towerA = await prisma.tower.create({
-    data: {
+  const towerA = await prisma.tower.upsert({
+    where: { id: 'tow-a' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Tower A - Aster',
+      blockCode: 'A',
+      totalFloors: 14,
+      totalUnits: 56,
+      hasElevator: true,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'tow-a',
       societyId: socGVS.id,
       name: 'Tower A - Aster',
@@ -84,8 +271,18 @@ async function seed() {
     },
   });
 
-  const towerB = await prisma.tower.create({
-    data: {
+  const towerB = await prisma.tower.upsert({
+    where: { id: 'tow-b' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Tower B - Bluebell',
+      blockCode: 'B',
+      totalFloors: 16,
+      totalUnits: 64,
+      hasElevator: true,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'tow-b',
       societyId: socGVS.id,
       name: 'Tower B - Bluebell',
@@ -97,8 +294,18 @@ async function seed() {
     },
   });
 
-  const towerC = await prisma.tower.create({
-    data: {
+  const towerC = await prisma.tower.upsert({
+    where: { id: 'tow-c' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Tower C - Carnation',
+      blockCode: 'C',
+      totalFloors: 12,
+      totalUnits: 48,
+      hasElevator: true,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'tow-c',
       societyId: socGVS.id,
       name: 'Tower C - Carnation',
@@ -112,8 +319,20 @@ async function seed() {
 
   // 4. Flats
   console.log('🚪 Seeding Flats...');
-  const flatB1204 = await prisma.flat.create({
-    data: {
+  const flatB1204 = await prisma.flat.upsert({
+    where: { id: 'flat-1204' },
+    update: {
+      societyId: socGVS.id,
+      towerId: towerB.id,
+      flatNumber: 'B-1204',
+      floorNumber: 12,
+      intercomExtension: '1204',
+      bhkType: '3BHK',
+      carpetAreaSqft: 1450.0,
+      occupancyStatus: 'OWNER_OCCUPIED',
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'flat-1204',
       societyId: socGVS.id,
       towerId: towerB.id,
@@ -127,8 +346,20 @@ async function seed() {
     },
   });
 
-  const flatA402 = await prisma.flat.create({
-    data: {
+  const flatA402 = await prisma.flat.upsert({
+    where: { id: 'flat-402' },
+    update: {
+      societyId: socGVS.id,
+      towerId: towerA.id,
+      flatNumber: 'A-402',
+      floorNumber: 4,
+      intercomExtension: '0402',
+      bhkType: '2BHK',
+      carpetAreaSqft: 1050.0,
+      occupancyStatus: 'TENANT_OCCUPIED',
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'flat-402',
       societyId: socGVS.id,
       towerId: towerA.id,
@@ -142,8 +373,20 @@ async function seed() {
     },
   });
 
-  const flatC301 = await prisma.flat.create({
-    data: {
+  const flatC301 = await prisma.flat.upsert({
+    where: { id: 'flat-301' },
+    update: {
+      societyId: socGVS.id,
+      towerId: towerC.id,
+      flatNumber: 'C-301',
+      floorNumber: 3,
+      intercomExtension: '0301',
+      bhkType: '4BHK',
+      carpetAreaSqft: 2100.0,
+      occupancyStatus: 'OWNER_OCCUPIED',
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'flat-301',
       societyId: socGVS.id,
       towerId: towerC.id,
@@ -157,8 +400,20 @@ async function seed() {
     },
   });
 
-  const flatB402 = await prisma.flat.create({
-    data: {
+  const flatB402 = await prisma.flat.upsert({
+    where: { id: 'flat-b402' },
+    update: {
+      societyId: socGVS.id,
+      towerId: towerB.id,
+      flatNumber: 'B-402',
+      floorNumber: 4,
+      intercomExtension: '0402',
+      bhkType: '3BHK',
+      carpetAreaSqft: 1380.0,
+      occupancyStatus: 'OWNER_OCCUPIED',
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'flat-b402',
       societyId: socGVS.id,
       towerId: towerB.id,
@@ -173,9 +428,24 @@ async function seed() {
   });
 
   // 5. Users
-  console.log('👤 Seeding Portal Users...');
-  const userVikram = await prisma.user.create({
-    data: {
+  console.log('👤 Seeding Portal Users with Secure Password Hashes...');
+  const credVikram = await resolveSeedCredentials('user-res-1', 'resident');
+  const userVikram = await prisma.user.upsert({
+    where: { id: 'user-res-1' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatB1204.id,
+      name: 'Vikram Joshi',
+      email: 'vikram.joshi@aarizo.com',
+      phone: '9820098200',
+      role: 'resident',
+      flatNumber: 'B-1204',
+      flatDetails: 'Tower B · B-1204',
+      status: 'ACTIVE',
+      passwordHash: credVikram.passwordHash,
+      salt: credVikram.salt,
+    },
+    create: {
       id: 'user-res-1',
       societyId: socGVS.id,
       flatId: flatB1204.id,
@@ -186,11 +456,28 @@ async function seed() {
       flatNumber: 'B-1204',
       flatDetails: 'Tower B · B-1204',
       status: 'ACTIVE',
+      passwordHash: credVikram.passwordHash,
+      salt: credVikram.salt,
     },
   });
 
-  const userAnanya = await prisma.user.create({
-    data: {
+  const credAnanya = await resolveSeedCredentials('user-res-2', 'resident');
+  const userAnanya = await prisma.user.upsert({
+    where: { id: 'user-res-2' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatA402.id,
+      name: 'Ananya Roy',
+      email: 'ananya.roy@aarizo.com',
+      phone: '9819998199',
+      role: 'resident',
+      flatNumber: 'A-402',
+      flatDetails: 'Tower A · A-402',
+      status: 'ACTIVE',
+      passwordHash: credAnanya.passwordHash,
+      salt: credAnanya.salt,
+    },
+    create: {
       id: 'user-res-2',
       societyId: socGVS.id,
       flatId: flatA402.id,
@@ -201,11 +488,29 @@ async function seed() {
       flatNumber: 'A-402',
       flatDetails: 'Tower A · A-402',
       status: 'ACTIVE',
+      passwordHash: credAnanya.passwordHash,
+      salt: credAnanya.salt,
     },
   });
 
-  const userSecretary = await prisma.user.create({
-    data: {
+  const credSecretary = await resolveSeedCredentials('user-sec-1', 'secretary');
+  const userSecretary = await prisma.user.upsert({
+    where: { id: 'user-sec-1' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatC301.id,
+      name: 'Mayuri Udar',
+      email: 'mayuri.udar@aarizo.com',
+      phone: '9876543210',
+      role: 'secretary',
+      flatNumber: 'C-301',
+      flatDetails: 'Tower C · C-301',
+      designation: 'General Secretary',
+      status: 'ACTIVE',
+      passwordHash: credSecretary.passwordHash,
+      salt: credSecretary.salt,
+    },
+    create: {
       id: 'user-sec-1',
       societyId: socGVS.id,
       flatId: flatC301.id,
@@ -217,11 +522,26 @@ async function seed() {
       flatDetails: 'Tower C · C-301',
       designation: 'General Secretary',
       status: 'ACTIVE',
+      passwordHash: credSecretary.passwordHash,
+      salt: credSecretary.salt,
     },
   });
 
-  const userGuard = await prisma.user.create({
-    data: {
+  const credGuard = await resolveSeedCredentials('user-guard-1', 'guard');
+  const userGuard = await prisma.user.upsert({
+    where: { id: 'user-guard-1' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Officer Ramesh Shinde',
+      email: 'guard.ramesh@aarizo.com',
+      phone: '9892011223',
+      role: 'guard',
+      designation: 'Chief Security Officer',
+      status: 'ACTIVE',
+      passwordHash: credGuard.passwordHash,
+      salt: credGuard.salt,
+    },
+    create: {
       id: 'user-guard-1',
       societyId: socGVS.id,
       name: 'Officer Ramesh Shinde',
@@ -230,11 +550,28 @@ async function seed() {
       role: 'guard',
       designation: 'Chief Security Officer',
       status: 'ACTIVE',
+      passwordHash: credGuard.passwordHash,
+      salt: credGuard.salt,
     },
   });
 
-  const userCommittee = await prisma.user.create({
-    data: {
+  const credCommittee = await resolveSeedCredentials('user-com-1', 'committee');
+  const userCommittee = await prisma.user.upsert({
+    where: { id: 'user-com-1' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatB402.id,
+      name: 'Dr. Ashok Mehta',
+      email: 'ashok.mehta@aarizo.com',
+      phone: '9833445566',
+      role: 'committee',
+      flatNumber: 'B-402',
+      designation: 'Treasurer & Committee Board Member',
+      status: 'ACTIVE',
+      passwordHash: credCommittee.passwordHash,
+      salt: credCommittee.salt,
+    },
+    create: {
       id: 'user-com-1',
       societyId: socGVS.id,
       flatId: flatB402.id,
@@ -245,11 +582,26 @@ async function seed() {
       flatNumber: 'B-402',
       designation: 'Treasurer & Committee Board Member',
       status: 'ACTIVE',
+      passwordHash: credCommittee.passwordHash,
+      salt: credCommittee.salt,
     },
   });
 
-  const userFacility = await prisma.user.create({
-    data: {
+  const credFacility = await resolveSeedCredentials('user-fac-1', 'facility_manager');
+  const userFacility = await prisma.user.upsert({
+    where: { id: 'user-fac-1' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Rajesh Patil',
+      email: 'rajesh.patil@aarizo.com',
+      phone: '9811223344',
+      role: 'facility_manager',
+      designation: 'Senior Facility Engineer',
+      status: 'ACTIVE',
+      passwordHash: credFacility.passwordHash,
+      salt: credFacility.salt,
+    },
+    create: {
       id: 'user-fac-1',
       societyId: socGVS.id,
       name: 'Rajesh Patil',
@@ -258,11 +610,26 @@ async function seed() {
       role: 'facility_manager',
       designation: 'Senior Facility Engineer',
       status: 'ACTIVE',
+      passwordHash: credFacility.passwordHash,
+      salt: credFacility.salt,
     },
   });
 
-  const userVendor = await prisma.user.create({
-    data: {
+  const credVendor = await resolveSeedCredentials('user-ven-1', 'vendor');
+  const userVendor = await prisma.user.upsert({
+    where: { id: 'user-ven-1' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Ramesh Gupta',
+      email: 'ramesh.gupta@aquapure.com',
+      phone: '9822100445',
+      role: 'vendor',
+      designation: 'Managing Director, AquaPure Ltd',
+      status: 'ACTIVE',
+      passwordHash: credVendor.passwordHash,
+      salt: credVendor.salt,
+    },
+    create: {
       id: 'user-ven-1',
       societyId: socGVS.id,
       name: 'Ramesh Gupta',
@@ -271,11 +638,26 @@ async function seed() {
       role: 'vendor',
       designation: 'Managing Director, AquaPure Ltd',
       status: 'ACTIVE',
+      passwordHash: credVendor.passwordHash,
+      salt: credVendor.salt,
     },
   });
 
-  const userAdmin = await prisma.user.create({
-    data: {
+  const credAdmin = await resolveSeedCredentials('user-adm-1', 'admin');
+  const userAdmin = await prisma.user.upsert({
+    where: { id: 'user-adm-1' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Super Administrator',
+      email: 'admin@aarizo.com',
+      phone: '9999988888',
+      role: 'admin',
+      designation: 'Enterprise Platform Administrator',
+      status: 'ACTIVE',
+      passwordHash: credAdmin.passwordHash,
+      salt: credAdmin.salt,
+    },
+    create: {
       id: 'user-adm-1',
       societyId: socGVS.id,
       name: 'Super Administrator',
@@ -284,13 +666,30 @@ async function seed() {
       role: 'admin',
       designation: 'Enterprise Platform Administrator',
       status: 'ACTIVE',
+      passwordHash: credAdmin.passwordHash,
+      salt: credAdmin.salt,
     },
   });
 
   // 6. Residents
   console.log('👥 Seeding Resident Records...');
-  const resVikram = await prisma.resident.create({
-    data: {
+  const resVikram = await prisma.resident.upsert({
+    where: { id: 'res-1' },
+    update: {
+      societyId: socGVS.id,
+      userId: userVikram.id,
+      flatId: flatB1204.id,
+      name: 'Vikram Joshi',
+      phone: '9820098200',
+      email: 'vikram.joshi@aarizo.com',
+      residentType: 'OWNER',
+      moveInDate: new Date('2023-06-01'),
+      emergencyContactName: 'Pooja Joshi',
+      emergencyContactPhone: '9820098205',
+      isVerified: true,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'res-1',
       societyId: socGVS.id,
       userId: userVikram.id,
@@ -307,8 +706,23 @@ async function seed() {
     },
   });
 
-  const resAnanya = await prisma.resident.create({
-    data: {
+  const resAnanya = await prisma.resident.upsert({
+    where: { id: 'res-2' },
+    update: {
+      societyId: socGVS.id,
+      userId: userAnanya.id,
+      flatId: flatA402.id,
+      name: 'Ananya Roy',
+      phone: '9819998199',
+      email: 'ananya.roy@aarizo.com',
+      residentType: 'TENANT',
+      moveInDate: new Date('2024-01-15'),
+      emergencyContactName: 'Subir Roy',
+      emergencyContactPhone: '9819998100',
+      isVerified: true,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'res-2',
       societyId: socGVS.id,
       userId: userAnanya.id,
@@ -325,8 +739,21 @@ async function seed() {
     },
   });
 
-  const resMayuri = await prisma.resident.create({
-    data: {
+  const resMayuri = await prisma.resident.upsert({
+    where: { id: 'res-3' },
+    update: {
+      societyId: socGVS.id,
+      userId: userSecretary.id,
+      flatId: flatC301.id,
+      name: 'Mayuri Udar',
+      phone: '9876543210',
+      email: 'mayuri.udar@aarizo.com',
+      residentType: 'OWNER',
+      moveInDate: new Date('2022-11-10'),
+      isVerified: true,
+      status: 'ACTIVE',
+    },
+    create: {
       id: 'res-3',
       societyId: socGVS.id,
       userId: userSecretary.id,
@@ -343,7 +770,7 @@ async function seed() {
 
   // 7. Family Members
   console.log('👨‍👩‍👦 Seeding Family Members...');
-  await prisma.familyMember.createMany({
+  await prisma.familyMember.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'fam-1',
@@ -376,7 +803,7 @@ async function seed() {
 
   // 8. Vehicles
   console.log('🚗 Seeding Registered Vehicles...');
-  await prisma.vehicle.createMany({
+  await prisma.vehicle.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'veh-1',
@@ -416,7 +843,7 @@ async function seed() {
 
   // 9. Staff
   console.log('🛡️ Seeding Security & Operations Staff...');
-  await prisma.staff.createMany({
+  await prisma.staff.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'st-1',
@@ -454,7 +881,7 @@ async function seed() {
 
   // 10. Domestic Workers
   console.log('🧹 Seeding Domestic Workers & Helpers...');
-  await prisma.domesticWorker.createMany({
+  await prisma.domesticWorker.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'dw-1',
@@ -497,7 +924,7 @@ async function seed() {
 
   // 11. Vendors
   console.log('🏪 Seeding Society Vendors...');
-  await prisma.vendor.createMany({
+  await prisma.vendor.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'ven-1',
@@ -540,7 +967,7 @@ async function seed() {
   // 12. Visitor Passes
   console.log('🎟️ Seeding Smart Visitor Passes...');
   const now = new Date();
-  await prisma.visitorPass.createMany({
+  await prisma.visitorPass.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'pass-8492',
@@ -604,7 +1031,7 @@ async function seed() {
 
   // 13. Parking Slots
   console.log('🅿️ Seeding Parking Inventory...');
-  await prisma.parkingSlot.createMany({
+  await prisma.parkingSlot.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'slot-1',
@@ -659,7 +1086,7 @@ async function seed() {
 
   // 14. Parcels
   console.log('📦 Seeding Parcel Locker Records...');
-  await prisma.parcel.createMany({
+  await prisma.parcel.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'pcl-1',
@@ -691,7 +1118,7 @@ async function seed() {
 
   // 15. Amenities
   console.log('🏊 Seeding Amenities...');
-  await prisma.amenity.createMany({
+  await prisma.amenity.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'amn-1',
@@ -745,7 +1172,7 @@ async function seed() {
 
   // 16. Maintenance Tickets
   console.log('🔧 Seeding Maintenance Tickets...');
-  await prisma.maintenanceTicket.createMany({
+  await prisma.maintenanceTicket.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'tkt-1',
@@ -789,8 +1216,19 @@ async function seed() {
 
   // 17. Billing Cycles
   console.log('💳 Seeding Billing Cycles & Invoices...');
-  const cycleOct = await prisma.billingCycle.create({
-    data: {
+  const cycleOct = await prisma.billingCycle.upsert({
+    where: { id: 'cycle-2026-10' },
+    update: {
+      societyId: socGVS.id,
+      cycleName: 'October 2026 Maintenance Levy',
+      monthYear: '10-2026',
+      billingDate: new Date('2026-10-01'),
+      dueDate: new Date('2026-10-15'),
+      lateFeeAmount: 250.0,
+      totalBilledAmount: 850000.0,
+      totalCollectedAmount: 620000.0,
+    },
+    create: {
       id: 'cycle-2026-10',
       societyId: socGVS.id,
       cycleName: 'October 2026 Maintenance Levy',
@@ -804,7 +1242,7 @@ async function seed() {
   });
 
   // 18. Billing Invoices
-  await prisma.billingInvoice.createMany({
+  await prisma.billingInvoice.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'inv-101',
@@ -873,7 +1311,7 @@ async function seed() {
 
   // 18b. Payments
   console.log('💳 Seeding Payment Transactions...');
-  await prisma.payment.createMany({
+  await prisma.payment.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'pay-101',
@@ -916,7 +1354,7 @@ async function seed() {
 
   // 19. Emergency Incidents
   console.log('🚨 Seeding Emergency Incident Command Logs...');
-  await prisma.emergencyIncident.createMany({
+  await prisma.emergencyIncident.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'inc-1',
@@ -943,7 +1381,7 @@ async function seed() {
 
   // 20. Notifications
   console.log('🔔 Seeding System Notifications...');
-  await prisma.notification.createMany({
+  await prisma.notification.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'notif-1',
@@ -988,7 +1426,7 @@ async function seed() {
 
   // 21. Audit Logs
   console.log('📜 Seeding Audit Trails...');
-  await prisma.auditLog.createMany({
+  await prisma.auditLog.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'audit-1',
@@ -1027,7 +1465,7 @@ async function seed() {
   });
 
   console.log('📢 Seeding Announcements and Community Events...');
-  await prisma.announcement.createMany({
+  await prisma.announcement.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'ann-1',
@@ -1059,7 +1497,7 @@ async function seed() {
     ],
   });
 
-  await prisma.communityEvent.createMany({
+  await prisma.communityEvent.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'evt-1',
@@ -1084,7 +1522,7 @@ async function seed() {
 
   // 24. Advertisements / Sponsored Offers
   console.log('📢 Seeding Society Advertisements & Vendor Offers...');
-  await prisma.advertisement.createMany({
+  await prisma.advertisement.createMany({ skipDuplicates: true,
     data: [
       {
         id: 'ad-1',
@@ -1138,11 +1576,20 @@ async function seed() {
   console.log('🎉 SUCCESS! All models in AARIZO database successfully seeded!');
 }
 
-seed()
-  .catch((e) => {
-    console.error('❌ Seeding failed:', e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+// Execute seed only when invoked directly as the main process script,
+// and not when helper functions are imported by tests or other modules.
+const isMainScript = Boolean(
+  (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) ||
+  (process.argv[1] && /(?:^|[/\\])seed\.(?:ts|js|mjs|cjs)$/.test(process.argv[1]))
+);
+
+if (isMainScript) {
+  seed()
+    .catch((e) => {
+      console.error('❌ Seeding failed:', e);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

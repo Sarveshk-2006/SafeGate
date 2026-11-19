@@ -6,20 +6,24 @@ This directory provides the complete PostgreSQL database migration engine for th
 
 ## 1. File Structure
 
-- [01_schema.sql](file:///c:/Users/user/OneDrive/Desktop/Competition/AAZIRA/scripts/postgres/01_schema.sql): Complete DDL containing all 25+ domain tables, custom enums, primary/foreign keys, indexes, and automated `updated_at` triggers.
-- [02_rls_policies.sql](file:///c:/Users/user/OneDrive/Desktop/Competition/AAZIRA/scripts/postgres/02_rls_policies.sql): Row Level Security (RLS) policies enforcing multi-tenant isolation (`society_id`) and role-based permissions (`admin`, `secretary`, `guard`, `resident`, etc.).
-- [03_seed.sql](file:///c:/Users/user/OneDrive/Desktop/Competition/AAZIRA/scripts/postgres/03_seed.sql): Production bootstrap and demo seed data matching all 7 canonical roles and sample societies (`soc-gvs`, `soc-azh`).
-- [migrate.ts](file:///c:/Users/user/OneDrive/Desktop/Competition/AAZIRA/scripts/postgres/migrate.ts): Node/TypeScript automated migration execution script.
-- [docker-compose.yml](file:///c:/Users/user/OneDrive/Desktop/Competition/AAZIRA/docker-compose.yml): One-command PostgreSQL 16 + pgweb UI setup.
+- [01_schema.sql](file:///scripts/postgres/01_schema.sql): Complete DDL containing all 25+ domain tables, custom enums, primary/foreign keys, indexes, and automated `updated_at` triggers.
+- [02_rls_policies.sql](file:///scripts/postgres/02_rls_policies.sql): Row Level Security (RLS) policies enforcing multi-tenant isolation (`society_id`) and role-based permissions (`admin`, `secretary`, `guard`, `resident`, etc.).
+- [03_seed.sql](file:///scripts/postgres/03_seed.sql): Local development and testing demo personas matching canonical roles and sample societies (`soc-gvs`, `soc-azh`). Protected by a fail-closed PL/pgSQL environment guard.
+- [migrate.ts](file:///scripts/postgres/migrate.ts): Node/TypeScript automated migration execution script with automatic fail-closed environment detection.
+- [docker-compose.yml](file:///docker-compose.yml): One-command PostgreSQL 16 + pgweb UI setup (schema-only by default; demo seeding via `docker-compose.dev.yml`).
 
 ---
 
 ## 2. Quickstart with Docker
 
-To boot the PostgreSQL instance with automatic schema initialization and seeding:
+To boot the PostgreSQL instance with automatic schema initialization:
 
 ```bash
+# Production & staging schema initialization (demo seed excluded)
 docker compose up -d
+
+# Or local development with demo personas opted-in:
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 - **PostgreSQL Connection**: `postgres://aarizo_admin:aarizo_secure_password_2026@localhost:5432/aarizo_community`
@@ -32,9 +36,14 @@ docker compose up -d
 If using an existing PostgreSQL server:
 
 ```bash
+# 1. Apply production schema DDL
 psql -U aarizo_admin -d aarizo_community -f scripts/postgres/01_schema.sql
+
+# 2. Apply Row-Level Security policies
 psql -U aarizo_admin -d aarizo_community -f scripts/postgres/02_rls_policies.sql
-psql -U aarizo_admin -d aarizo_community -f scripts/postgres/03_seed.sql
+
+# Note: 03_seed.sql is strictly for local dev/testing. It will fail unless aarizo.environment is 'development':
+# psql -U aarizo_admin -d aarizo_community -c "SET aarizo.environment = 'development';" -f scripts/postgres/03_seed.sql
 ```
 
 ---

@@ -10,6 +10,7 @@ import type {
 import { amenityRepository, amenityBookingRepository } from '../repositories/amenities/AmenityRepository';
 import { realtimeService } from './realtimeService';
 import { getBackendBaseUrl } from '../utils/backendConfig';
+import { authenticatedFetch } from './authStorage';
 
 const AMENITIES_STORAGE_KEY = 'communityos_amenities';
 const BOOKINGS_STORAGE_KEY = 'communityos_amenity_bookings';
@@ -327,7 +328,7 @@ class AmenityService {
     }>;
   }> {
     try {
-      const res = await fetch(`/api/amenities/${amenityId}/availability?date=${bookingDate}&societyId=${societyId}`);
+      const res = await authenticatedFetch(`/api/amenities/${amenityId}/availability?date=${bookingDate}&societyId=${societyId}`);
       if (res.ok) {
         return await res.json();
       }
@@ -491,7 +492,7 @@ class AmenityService {
     paymentDetails?: { bookingFee?: number; paymentStatus?: 'FREE' | 'PAID' | 'PENDING'; paymentId?: string }
   ): Promise<AmenityBooking> {
     try {
-      const res = await fetch(`/api/amenities/${amenityId}/book`, {
+      const res = await authenticatedFetch(`/api/amenities/${amenityId}/book`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -623,7 +624,7 @@ class AmenityService {
     adminNotes?: string
   ): AmenityBooking {
     if (status === 'CANCELLED') {
-      fetch(`${getBackendBaseUrl()}/api/amenities/bookings/${bookingId}/cancel`, {
+      authenticatedFetch(`${getBackendBaseUrl()}/api/amenities/bookings/${bookingId}/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ societyId }),

@@ -1,8 +1,9 @@
 import type { UserRole } from '../domains/auth/types';
+import { AUTH_KEYS } from '../services/authStorage';
 
-const ACTIVE_SESSION_KEY = 'dwellora_active_session';
-const LAST_ROUTE_KEY = 'dwellora_last_route';
-const LAST_ROLE_KEY = 'dwellora_last_role';
+const ACTIVE_SESSION_KEY = AUTH_KEYS.SESSION_ACTIVE;
+const LAST_ROUTE_KEY = AUTH_KEYS.LAST_ROUTE;
+const LAST_ROLE_KEY = AUTH_KEYS.LAST_ROLE;
 
 /**
  * List of sensitive or transient paths/modals that should NEVER be restored after fresh launch or reload
@@ -66,7 +67,9 @@ export const validateRestorableRoute = (role: UserRole | string | undefined, sav
 export const trackActiveRoute = (role: string | undefined, currentPath: string) => {
   if (!role || typeof window === 'undefined') return;
 
-  const isSessionActive = sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true';
+  const isSessionActive =
+    sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true' ||
+    sessionStorage.getItem('dwellora_active_session') === 'true';
   if (!isSessionActive) return;
 
   const cleanPath = currentPath.toLowerCase();
@@ -87,10 +90,14 @@ export const trackActiveRoute = (role: string | undefined, currentPath: string) 
 export const getRestoredOrRoleDefaultRoute = (role: string | undefined, defaultRoute: string): string => {
   if (typeof window === 'undefined') return defaultRoute;
 
-  const isSessionActive = sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true';
+  const isSessionActive =
+    sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true' ||
+    sessionStorage.getItem('dwellora_active_session') === 'true';
   if (!isSessionActive) return defaultRoute;
 
-  const savedRoute = sessionStorage.getItem(LAST_ROUTE_KEY);
+  const savedRoute =
+    sessionStorage.getItem(LAST_ROUTE_KEY) ||
+    sessionStorage.getItem('dwellora_last_route');
   const validated = validateRestorableRoute(role, savedRoute);
 
   return validated || defaultRoute;

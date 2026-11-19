@@ -1,3 +1,5 @@
+import { authenticatedFetch } from '../services/authStorage';
+
 /**
  * PostgreSQL Database Client & API Abstraction for AARIZO CommunityOS
  * Communicates with PostgreSQL backend or PostgREST / RESTful proxy with
@@ -36,7 +38,7 @@ class PostgresClient {
     options: PostgresQueryOptions = {}
   ): Promise<T[]> {
     try {
-      const response = await fetch(`${this.endpoint}/${tableName}/query`, {
+      const response = await authenticatedFetch(`${this.endpoint}/${tableName}/query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -63,7 +65,7 @@ class PostgresClient {
     data: Partial<T>,
     options: PostgresQueryOptions = {}
   ): Promise<T> {
-    const response = await fetch(`${this.endpoint}/${tableName}`, {
+    const response = await authenticatedFetch(`${this.endpoint}/${tableName}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -85,7 +87,7 @@ class PostgresClient {
     id: string, 
     data: Partial<T>
   ): Promise<void> {
-    await fetch(`${this.endpoint}/${tableName}/${id}`, {
+    await authenticatedFetch(`${this.endpoint}/${tableName}/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -93,7 +95,7 @@ class PostgresClient {
   }
 
   public async delete(tableName: string, id: string): Promise<void> {
-    await fetch(`${this.endpoint}/${tableName}/${id}`, {
+    await authenticatedFetch(`${this.endpoint}/${tableName}/${id}`, {
       method: 'DELETE'
     });
   }

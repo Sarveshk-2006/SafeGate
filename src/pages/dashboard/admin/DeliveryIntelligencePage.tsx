@@ -25,9 +25,13 @@ export const DeliveryIntelligencePage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'PARCEL_ROOM' | 'DELIVERIES' | 'ANALYTICS'>('PARCEL_ROOM');
 
-  const reloadData = () => {
-    const list = visitorService.getPasses(currentSocietyId);
-    setPasses(list);
+  const reloadData = async () => {
+    try {
+      const list = await visitorService.fetchPasses(currentSocietyId);
+      setPasses(list);
+    } catch {
+      setPasses(visitorService.getPasses(currentSocietyId));
+    }
     setAnalytics(visitorService.getVisitorAnalytics(currentSocietyId));
   };
 

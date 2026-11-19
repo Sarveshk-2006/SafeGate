@@ -1,5 +1,6 @@
 import { BaseRepository } from '../BaseRepository';
 import type { VendorProfile } from '../../domains/vendors/types';
+import { authenticatedFetch } from '../../services/authStorage';
 
 export class VendorRepository extends BaseRepository<VendorProfile> {
   constructor() {
@@ -12,7 +13,7 @@ export class VendorRepository extends BaseRepository<VendorProfile> {
 
   public async getVendorByUid(uid: string): Promise<VendorProfile | null> {
     try {
-      const res = await fetch(`/api/collections/vendors/${uid}`);
+      const res = await authenticatedFetch(`/api/collections/vendors/${uid}`);
       if (res.ok) {
         return (await res.json()) as VendorProfile;
       }

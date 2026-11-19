@@ -1,6 +1,7 @@
 import { BaseRepository } from '../BaseRepository';
 import type { Payment, PaymentStatus } from '../../types/payment';
 import { realtimeService } from '../../services/realtimeService';
+import { authenticatedFetch } from '../../services/authStorage';
 
 export class PaymentRepository extends BaseRepository<Payment> {
   constructor() {
@@ -13,7 +14,7 @@ export class PaymentRepository extends BaseRepository<Payment> {
 
   public async listBySociety(societyId: string): Promise<Payment[]> {
     try {
-      const res = await fetch(`/api/payments?societyId=${encodeURIComponent(societyId)}`);
+      const res = await authenticatedFetch(`/api/payments?societyId=${encodeURIComponent(societyId)}`);
       if (res.ok) {
         return (await res.json()) as Payment[];
       }
@@ -37,7 +38,7 @@ export class PaymentRepository extends BaseRepository<Payment> {
 
   public async listByResident(residentId: string): Promise<Payment[]> {
     try {
-      const res = await fetch(`/api/payments?residentId=${encodeURIComponent(residentId)}`);
+      const res = await authenticatedFetch(`/api/payments?residentId=${encodeURIComponent(residentId)}`);
       if (res.ok) {
         return (await res.json()) as Payment[];
       }
@@ -62,7 +63,7 @@ export class PaymentRepository extends BaseRepository<Payment> {
   public subscribeByInvoice(invoiceId: string, callback: (payments: Payment[]) => void): () => void {
     const fetchInvoicePayments = async () => {
       try {
-        const res = await fetch(`/api/payments?invoiceId=${encodeURIComponent(invoiceId)}`);
+        const res = await authenticatedFetch(`/api/payments?invoiceId=${encodeURIComponent(invoiceId)}`);
         if (res.ok) {
           callback((await res.json()) as Payment[]);
         }
@@ -81,7 +82,7 @@ export class PaymentRepository extends BaseRepository<Payment> {
   public subscribePayment(paymentId: string, callback: (payment: Payment | null) => void): () => void {
     const fetchPay = async () => {
       try {
-        const res = await fetch(`/api/collections/payments/${paymentId}`);
+        const res = await authenticatedFetch(`/api/collections/payments/${paymentId}`);
         if (res.ok) {
           callback((await res.json()) as Payment);
         } else {

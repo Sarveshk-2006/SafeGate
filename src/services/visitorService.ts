@@ -5,6 +5,7 @@ import type {
   PassValidationResult,
   VisitorCategory,
   PassLifecycleType,
+  PassStatus,
   VisitorAnalyticsData,
 } from '../types/visitor';
 import { logAudit } from './societyService';
@@ -137,12 +138,13 @@ function getItem<T>(key: string, defaultValue: T): T {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) {
-      localStorage.setItem(key, JSON.stringify(defaultValue));
-      return defaultValue;
+      const cloned = JSON.parse(JSON.stringify(defaultValue));
+      localStorage.setItem(key, JSON.stringify(cloned));
+      return cloned;
     }
     return JSON.parse(raw);
   } catch {
-    return defaultValue;
+    return JSON.parse(JSON.stringify(defaultValue));
   }
 }
 
@@ -154,7 +156,81 @@ function setItem<T>(key: string, value: T): void {
   }
 }
 
+/**
+ * Normalizes any pass record (server relational format or local cached format)
+ * into a complete, strongly-typed SmartVisitorPass.
+ */
+export function normalizePass(pass: any): SmartVisitorPass {
+  if (!pass) {
+    throw new Error('Cannot normalize null or undefined visitor pass');
+  }
+
+  const validUntil = pass.validTo || pass.validUntil || new Date(Date.now() + 86400000).toISOString();
+  const validFrom = pass.validFrom || pass.createdAt || new Date().toISOString();
+  const rawStatus = pass.status || 'EXPECTED';
+  const status: PassStatus = rawStatus === 'PENDING' ? 'EXPECTED' : rawStatus === 'CANCELLED' ? 'REVOKED' : rawStatus;
+
+  let category: VisitorCategory = pass.category || pass.passType || 'GUEST';
+  if ((category as string) === 'FREQUENT') category = 'DOMESTIC_WORKER';
+  if ((category as string) === 'SERVICE') category = 'SERVICE_PROVIDER';
+
+  const codeMatch = pass.qrCodeHash?.match(/GVS-\d+/)?.[0] || pass.passCode || (pass.id ? `GVS-${pass.id.slice(-4).toUpperCase()}` : 'GVS-8492');
+
+  return {
+    id: pass.id || `pass-${Date.now()}`,
+    societyId: pass.societyId || 'soc-gvs',
+    residentId: pass.residentId || 'res-1',
+    residentName: pass.residentName || pass.resident?.name || 'Resident',
+    flatCode: pass.flatCode || pass.flat?.flatNumber || 'B-1204',
+    towerName: pass.towerName || pass.flat?.tower?.name || 'Tower B',
+    visitorName: pass.visitorName || 'Visitor',
+    visitorPhone: pass.visitorPhone || pass.phone || '',
+    category,
+    passLifecycle: pass.passLifecycle || (pass.passType === 'FREQUENT' ? 'REUSABLE' : 'ONE_TIME'),
+    passCode: codeMatch,
+    qrDataString: pass.qrDataString || pass.qrCodeHash || `COMMUNITYOS:${codeMatch}:${pass.societyId || 'soc-gvs'}:${pass.flatCode || 'B-1204'}`,
+    validFrom,
+    validUntil,
+    usageCount: pass.usageCount !== undefined ? pass.usageCount : (status === 'CHECKED_IN' || status === 'CHECKED_OUT' ? 1 : 0),
+    maxUsages: pass.maxUsages || (pass.passType === 'FREQUENT' ? 999 : 1),
+    vehicleNumber: pass.vehicleNumber || undefined,
+    photoUrl: pass.photoUrl || undefined,
+    companyName: pass.companyName || undefined,
+    purpose: pass.purpose || undefined,
+    groupCount: pass.groupCount || 1,
+    status,
+    lifecycleState: status === 'CHECKED_IN' ? 'INSIDE' : status === 'CHECKED_OUT' ? 'EXITED' : status === 'REVOKED' ? 'CANCELLED' : 'EXPECTED',
+    deliveryVendor: pass.deliveryVendor || pass.companyName || undefined,
+    packageReferenceNumber: pass.packageReferenceNumber || undefined,
+    checkedInAt: pass.checkedInAt || (pass.checkInTime ? new Date(pass.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined),
+    checkedOutAt: pass.checkedOutAt || (pass.checkOutTime ? new Date(pass.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined),
+    gateName: pass.gateName || 'Main Gate 1',
+    gateOfficerName: pass.gateOfficerName || undefined,
+    isOverdue: pass.isOverdue || status === 'OVERSTAYED' || (status === 'CHECKED_IN' && new Date() > new Date(validUntil)),
+    createdAt: pass.createdAt || new Date().toISOString(),
+  };
+}
+
 export const visitorService = {
+  // Authoritative API-first fetch with automatic local cache synchronization
+  fetchPasses: async (societyId: string): Promise<SmartVisitorPass[]> => {
+    try {
+      const serverPasses = await apiClient.getVisitorPasses(societyId);
+      if (Array.isArray(serverPasses)) {
+        const normalized = serverPasses.map(normalizePass);
+        // Authoritative update: server data replaces local passes for this society
+        const existingAll = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
+        const otherSocieties = existingAll.filter(p => p.societyId !== societyId);
+        setItem(STORAGE_KEYS.PASSES, [...normalized, ...otherSocieties]);
+        return normalized;
+      }
+    } catch (err) {
+      console.warn('[visitorService] Failed to fetch passes from API, falling back to local cache:', err);
+    }
+    return visitorService.getPasses(societyId);
+  },
+
+  // Synchronous read-through cache for instant render fallback
   getPasses: (societyId: string): SmartVisitorPass[] =>
     getItem(STORAGE_KEYS.PASSES, SEED_PASSES).filter((p) => p.societyId === societyId),
 
@@ -168,7 +244,8 @@ export const visitorService = {
       activatedBy: '',
     }),
 
-  createVisitorPass: (
+  // Server-authoritative pass creation: MUST await server confirmation
+  createVisitorPass: async (
     data: {
       societyId: string;
       residentId: string;
@@ -196,54 +273,65 @@ export const visitorService = {
       checkedInAt?: string;
     },
     actor: { id: string; name: string; role: string }
-  ): SmartVisitorPass => {
-    const passes = getItem(STORAGE_KEYS.PASSES, SEED_PASSES);
+  ): Promise<SmartVisitorPass> => {
     const codeNum = Math.floor(1000 + Math.random() * 9000);
     const passCode = `GVS-${codeNum}`;
 
-    const newPass: SmartVisitorPass = {
+    const payload = {
       ...data,
       id: `pass-${Date.now()}`,
       passCode,
+      phone: data.visitorPhone,
+      visitorPhone: data.visitorPhone,
+      passType: data.category,
+      category: data.category,
       qrDataString: `COMMUNITYOS:${passCode}:${data.societyId}:${data.flatCode}`,
       validFrom: data.validFrom || new Date().toISOString(),
       validUntil: data.validUntil || new Date(Date.now() + 86400000).toISOString(),
-      usageCount: data.status === 'CHECKED_IN' ? 1 : 0,
-      maxUsages: data.maxUsages || (data.passLifecycle === 'ONE_TIME' ? 1 : 999),
-      status: data.status || 'EXPECTED',
-      lifecycleState: data.status === 'CHECKED_IN' ? 'INSIDE' : 'EXPECTED',
-      maxAllowedDurationMinutes: data.maxAllowedDurationMinutes || (data.category === 'DELIVERY' ? 30 : 180),
-      isOverdue: false,
-      createdAt: new Date().toISOString(),
+      status: data.status || 'APPROVED',
+      purpose: data.purpose || (data.companyName ? `${data.companyName} Delivery` : undefined),
     };
 
-    setItem(STORAGE_KEYS.PASSES, [newPass, ...passes]);
-    visitorRepository.create(newPass).catch(() => {});
-    apiClient.createVisitorPass(newPass).catch(() => {});
-    logAudit(data.societyId, actor, 'CREATE', 'VisitorPass', newPass.id, `Generated ${data.category} pass ${passCode} for ${data.visitorName}`);
+    // 1. Authoritative API call: MUST await server confirmation!
+    let savedPass: SmartVisitorPass;
+    try {
+      const serverRes = await apiClient.createVisitorPass(payload);
+      savedPass = normalizePass(serverRes);
+    } catch (err: any) {
+      console.error('[visitorService] Authoritative createVisitorPass API call failed:', err);
+      throw new Error(`Failed to create visitor pass on server: ${err?.message || 'Network / Server Error'}`);
+    }
 
-    // Publish to Realtime Hub
+    // 2. Update local cache with authoritative server record
+    const passes = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
+    setItem(STORAGE_KEYS.PASSES, [savedPass, ...passes.filter(p => p.id !== savedPass.id)]);
+
+    // 3. Audit trail
+    logAudit(data.societyId, actor, 'CREATE', 'VisitorPass', savedPass.id, `Generated ${data.category} pass ${savedPass.passCode} for ${savedPass.visitorName}`);
+
+    // 4. Realtime publish
     realtimeService.publish(
       'VISITOR_ARRIVAL',
       {
-        passId: newPass.id,
-        passCode: newPass.passCode,
-        visitorName: newPass.visitorName,
-        flatCode: newPass.flatCode,
-        category: newPass.category,
-        photoUrl: newPass.photoUrl,
+        passId: savedPass.id,
+        passCode: savedPass.passCode,
+        visitorName: savedPass.visitorName,
+        flatCode: savedPass.flatCode,
+        category: savedPass.category,
+        photoUrl: savedPass.photoUrl,
         gate: data.gateName || 'Gate 1',
-        status: newPass.status,
+        status: savedPass.status,
       },
       data.societyId,
       actor.role,
       actor.name
     );
 
-    return newPass;
+    return savedPass;
   },
 
-  validatePassCode: (societyId: string, codeOrQr: string): PassValidationResult => {
+  // Authoritative server-backed passcode & QR validation
+  validatePassCode: async (societyId: string, codeOrQr: string): Promise<PassValidationResult> => {
     const lockdown = visitorService.getLockdownState(societyId);
     if (lockdown.isLockdownActive) {
       return {
@@ -253,7 +341,67 @@ export const visitorService = {
       };
     }
 
-    const passes = getItem(STORAGE_KEYS.PASSES, SEED_PASSES);
+    const cleanCode = codeOrQr.toUpperCase().trim();
+
+    // 1. Check Blacklist first
+    const blacklist = visitorService.getBlacklist(societyId);
+    const blMatch = blacklist.find((b) => b.phone.includes(cleanCode) || b.name.toLowerCase() === cleanCode.toLowerCase());
+    if (blMatch) {
+      return {
+        isValid: false,
+        reason: `VISITOR IS ON WATCHLIST/BLACKLIST: ${blMatch.reason}`,
+        blacklistMatch: blMatch,
+      };
+    }
+
+    // 2. Authoritative Server Validation
+    try {
+      const serverResult = await apiClient.verifyVisitorPass(cleanCode, societyId);
+      if (serverResult) {
+        const pass = serverResult.pass ? normalizePass(serverResult.pass) : undefined;
+        if (serverResult.isValid && pass) {
+          return {
+            isValid: true,
+            isOffline: false,
+            isAuthoritative: true,
+            canAuthorizeEntry: true,
+            verificationSource: 'server',
+            pass,
+          };
+        }
+        return {
+          isValid: false,
+          isOffline: false,
+          isAuthoritative: true,
+          canAuthorizeEntry: false,
+          verificationSource: 'server',
+          reason: serverResult.message || 'Pass invalid or expired',
+          pass,
+        };
+      }
+    } catch (err: any) {
+      console.warn('[visitorService] Server verification failed, falling back to local cache for informational reference:', err?.message || err);
+    }
+
+    // 3. Local Cache Fallback (if server is offline) — Explicitly flagged as unverified offline reference
+    return visitorService.validatePassCodeSync(societyId, codeOrQr, true);
+  },
+
+  validatePassCodeSync: (societyId: string, codeOrQr: string, isOfflineFallback = false): PassValidationResult => {
+    const lockdown = visitorService.getLockdownState(societyId);
+    if (lockdown.isLockdownActive) {
+      return {
+        isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
+        reason: `EMERGENCY SECURITY LOCKDOWN IS ACTIVE. All new visitor entry is restricted by ${lockdown.activatedBy}.`,
+        isLockdownActive: true,
+      };
+    }
+
+    const passes = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
     const cleanCode = codeOrQr.toUpperCase().trim();
 
     const pass = passes.find(
@@ -263,12 +411,22 @@ export const visitorService = {
           p.passCode.toUpperCase() === cleanCode ||
           p.passCode.toUpperCase().endsWith(cleanCode) ||
           p.id.toUpperCase().endsWith(cleanCode) ||
-          p.qrDataString.toUpperCase().includes(cleanCode)
+          p.qrDataString.toUpperCase().includes(cleanCode) ||
+          (p.visitorPhone && p.visitorPhone.includes(cleanCode))
         )
     );
 
     if (!pass) {
-      return { isValid: false, reason: 'Invalid Pass Code or QR. No matching pass record found.' };
+      return {
+        isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
+        reason: isOfflineFallback
+          ? 'Network unavailable and passcode not recognised in offline cache.'
+          : 'Invalid Pass Code or QR. No matching pass record found.',
+      };
     }
 
     const blacklist = visitorService.getBlacklist(societyId);
@@ -276,126 +434,202 @@ export const visitorService = {
     if (blMatch) {
       return {
         isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
         reason: `VISITOR IS ON WATCHLIST/BLACKLIST: ${blMatch.reason}`,
         blacklistMatch: blMatch,
         pass,
       };
     }
 
-    if (pass.status === 'REVOKED') {
-      return { isValid: false, reason: 'This pass has been REVOKED by resident/admin.', pass };
+    if (pass.status === 'REVOKED' || (pass.status as string) === 'CANCELLED') {
+      return {
+        isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
+        reason: 'This pass has been REVOKED by resident/admin (cached record).',
+        pass,
+      };
     }
     if (pass.status === 'REJECTED') {
-      return { isValid: false, reason: 'Entry for this visitor pass was previously REJECTED.', pass };
+      return {
+        isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
+        reason: 'Entry for this visitor pass was previously REJECTED (cached record).',
+        pass,
+      };
     }
 
     const now = new Date();
     const expiry = new Date(pass.validUntil);
     if (now > expiry) {
-      return { isValid: false, reason: `Pass has EXPIRED on ${expiry.toLocaleDateString()}`, pass };
+      return {
+        isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
+        reason: `Pass has EXPIRED on ${expiry.toLocaleDateString()} (cached record).`,
+        pass,
+      };
     }
 
     if (pass.usageCount >= pass.maxUsages) {
-      return { isValid: false, reason: `Maximum pass usage count limit (${pass.maxUsages}) reached.`, pass };
+      return {
+        isValid: false,
+        isOffline: isOfflineFallback,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: isOfflineFallback ? 'offline_cache' : undefined,
+        reason: `Maximum pass usage count limit (${pass.maxUsages}) reached (cached record).`,
+        pass,
+      };
     }
 
-    return { isValid: true, pass };
+    // Security Rule: A cached pass must NEVER be presented as server-confirmed valid or authorize gate check-in
+    if (isOfflineFallback) {
+      return {
+        isValid: false,
+        isOffline: true,
+        isAuthoritative: false,
+        canAuthorizeEntry: false,
+        verificationSource: 'offline_cache',
+        reason: 'OFFLINE CACHED RECORD — Authoritative server verification is unavailable. Gate entry CANNOT be authorized until network connection is restored.',
+        pass,
+      };
+    }
+
+    return {
+      isValid: true,
+      isOffline: false,
+      isAuthoritative: false,
+      canAuthorizeEntry: false,
+      pass,
+    };
   },
 
-  checkInVisitor: (
+  // Authoritative server-backed Gate Check-In
+  checkInVisitor: async (
     passId: string,
     gateDetails: { gateName: string; officerName: string },
     actor: { id: string; name: string; role: string }
-  ): SmartVisitorPass | null => {
-    const passes = getItem(STORAGE_KEYS.PASSES, SEED_PASSES);
-    const idx = passes.findIndex((p) => p.id === passId);
-    if (idx === -1) return null;
+  ): Promise<SmartVisitorPass> => {
+    let updatedPass: SmartVisitorPass;
+    try {
+      const serverRes = await apiClient.checkInVisitorPass(passId, gateDetails);
+      const raw = serverRes?.pass || serverRes;
+      updatedPass = normalizePass(raw);
+    } catch (err: any) {
+      // Fallback to general patch if dedicated endpoint fails
+      try {
+        const patchRes = await apiClient.updateVisitorPass(passId, {
+          status: 'CHECKED_IN',
+          gateName: gateDetails.gateName,
+          officerName: gateDetails.officerName,
+        });
+        updatedPass = normalizePass(patchRes);
+      } catch (patchErr: any) {
+        console.error('[visitorService] checkInVisitor failed on server:', patchErr);
+        throw new Error(`Check-in failed on server: ${patchErr?.message || err?.message || 'Server error'}`);
+      }
+    }
 
-    const timeStr = 'Today, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    passes[idx].status = 'CHECKED_IN';
-    passes[idx].lifecycleState = 'INSIDE';
-    passes[idx].checkedInAt = timeStr;
-    passes[idx].gateName = gateDetails.gateName;
-    passes[idx].gateOfficerName = gateDetails.officerName;
-    passes[idx].usageCount += 1;
-
+    // Update local cache
+    const passes = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
+    const idx = passes.findIndex(p => p.id === passId);
+    if (idx !== -1) {
+      passes[idx] = updatedPass;
+    } else {
+      passes.unshift(updatedPass);
+    }
     setItem(STORAGE_KEYS.PASSES, passes);
-    visitorRepository.update(passId, {
-      status: 'CHECKED_IN',
-      lifecycleState: 'INSIDE',
-      checkedInAt: timeStr,
-      gateName: gateDetails.gateName,
-      gateOfficerName: gateDetails.officerName,
-      usageCount: passes[idx].usageCount,
-    }).catch(() => {});
-    logAudit(passes[idx].societyId, actor, 'STATUS_CHANGE', 'VisitorPass', passId, `Checked in visitor ${passes[idx].visitorName} at ${gateDetails.gateName}`);
+
+    logAudit(updatedPass.societyId, actor, 'STATUS_CHANGE', 'VisitorPass', passId, `Checked in visitor ${updatedPass.visitorName} at ${gateDetails.gateName}`);
 
     // Publish to Realtime Hub
     realtimeService.publish(
       'VISITOR_ENTRY',
       {
         passId,
-        passCode: passes[idx].passCode,
-        visitorName: passes[idx].visitorName,
-        flatCode: passes[idx].flatCode,
+        passCode: updatedPass.passCode,
+        visitorName: updatedPass.visitorName,
+        flatCode: updatedPass.flatCode,
         gateName: gateDetails.gateName,
         officerName: gateDetails.officerName,
-        timestamp: timeStr,
+        timestamp: updatedPass.checkedInAt || 'Just now',
       },
-      passes[idx].societyId,
+      updatedPass.societyId,
       actor.role,
       actor.name
     );
 
-    return passes[idx];
+    return updatedPass;
   },
 
-  checkOutVisitor: (
+  // Authoritative server-backed Gate Check-Out
+  checkOutVisitor: async (
     passId: string,
     actor: { id: string; name: string; role: string }
-  ): SmartVisitorPass | null => {
-    const passes = getItem(STORAGE_KEYS.PASSES, SEED_PASSES);
-    const idx = passes.findIndex((p) => p.id === passId);
-    if (idx === -1) return null;
+  ): Promise<SmartVisitorPass> => {
+    let updatedPass: SmartVisitorPass;
+    try {
+      const serverRes = await apiClient.checkOutVisitorPass(passId);
+      const raw = serverRes?.pass || serverRes;
+      updatedPass = normalizePass(raw);
+    } catch (err: any) {
+      try {
+        const patchRes = await apiClient.updateVisitorPass(passId, {
+          status: 'CHECKED_OUT',
+        });
+        updatedPass = normalizePass(patchRes);
+      } catch (patchErr: any) {
+        console.error('[visitorService] checkOutVisitor failed on server:', patchErr);
+        throw new Error(`Check-out failed on server: ${patchErr?.message || err?.message || 'Server error'}`);
+      }
+    }
 
-    const timeStr = 'Today, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    passes[idx].status = 'CHECKED_OUT';
-    passes[idx].lifecycleState = 'EXITED';
-    passes[idx].checkedOutAt = timeStr;
-    passes[idx].isOverdue = false;
-
+    // Update local cache
+    const passes = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
+    const idx = passes.findIndex(p => p.id === passId);
+    if (idx !== -1) {
+      passes[idx] = updatedPass;
+    } else {
+      passes.unshift(updatedPass);
+    }
     setItem(STORAGE_KEYS.PASSES, passes);
-    visitorRepository.update(passId, {
-      status: 'CHECKED_OUT',
-      lifecycleState: 'EXITED',
-      checkedOutAt: timeStr,
-      isOverdue: false,
-    }).catch(() => {});
-    logAudit(passes[idx].societyId, actor, 'STATUS_CHANGE', 'VisitorPass', passId, `Checked out visitor ${passes[idx].visitorName}`);
+
+    logAudit(updatedPass.societyId, actor, 'STATUS_CHANGE', 'VisitorPass', passId, `Checked out visitor ${updatedPass.visitorName}`);
 
     // Publish to Realtime Hub
     realtimeService.publish(
       'VISITOR_EXIT',
       {
         passId,
-        passCode: passes[idx].passCode,
-        visitorName: passes[idx].visitorName,
-        flatCode: passes[idx].flatCode,
-        timestamp: timeStr,
+        passCode: updatedPass.passCode,
+        visitorName: updatedPass.visitorName,
+        flatCode: updatedPass.flatCode,
+        timestamp: updatedPass.checkedOutAt || 'Just now',
       },
-      passes[idx].societyId,
+      updatedPass.societyId,
       actor.role,
       actor.name
     );
 
-    return passes[idx];
+    return updatedPass;
   },
 
   recordDeliveryPickup: (
     passId: string,
     actor: { id: string; name: string; role: string }
   ): SmartVisitorPass | null => {
-    const passes = getItem(STORAGE_KEYS.PASSES, SEED_PASSES);
+    const passes = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
     const idx = passes.findIndex((p) => p.id === passId);
     if (idx === -1) return null;
 
@@ -406,6 +640,7 @@ export const visitorService = {
     passes[idx].checkedOutAt = timeStr;
 
     setItem(STORAGE_KEYS.PASSES, passes);
+    apiClient.updateVisitorPass(passId, { status: 'CHECKED_OUT' }).catch(() => {});
     logAudit(passes[idx].societyId, actor, 'UPDATE', 'VisitorPass', passId, `Recorded delivery package pickup for ${passes[idx].visitorName}`);
 
     // Publish to Realtime Hub
@@ -427,19 +662,29 @@ export const visitorService = {
     return passes[idx];
   },
 
-  revokePass: (
+  // Authoritative server-backed pass revocation
+  revokePass: async (
     passId: string,
     actor: { id: string; name: string; role: string }
-  ): SmartVisitorPass | null => {
-    const passes = getItem(STORAGE_KEYS.PASSES, SEED_PASSES);
-    const idx = passes.findIndex((p) => p.id === passId);
-    if (idx === -1) return null;
+  ): Promise<SmartVisitorPass> => {
+    let updatedPass: SmartVisitorPass;
+    try {
+      const serverRes = await apiClient.updateVisitorPass(passId, { status: 'CANCELLED' });
+      updatedPass = normalizePass(serverRes);
+    } catch (err: any) {
+      console.error('[visitorService] revokePass failed on server:', err);
+      throw new Error(`Revoking pass failed on server: ${err?.message || 'Server error'}`);
+    }
 
-    passes[idx].status = 'REVOKED';
-    passes[idx].lifecycleState = 'CANCELLED';
-    setItem(STORAGE_KEYS.PASSES, passes);
-    logAudit(passes[idx].societyId, actor, 'STATUS_CHANGE', 'VisitorPass', passId, `Revoked visitor pass ${passes[idx].passCode}`);
-    return passes[idx];
+    const passes = getItem<SmartVisitorPass[]>(STORAGE_KEYS.PASSES, SEED_PASSES);
+    const idx = passes.findIndex((p) => p.id === passId);
+    if (idx !== -1) {
+      passes[idx] = updatedPass;
+      setItem(STORAGE_KEYS.PASSES, passes);
+    }
+
+    logAudit(updatedPass.societyId, actor, 'STATUS_CHANGE', 'VisitorPass', passId, `Revoked visitor pass ${updatedPass.passCode}`);
+    return updatedPass;
   },
 
   addBlacklist: (
@@ -566,19 +811,6 @@ export const visitorService = {
       deliveryVolumeByVendor,
       dailyVisitorTrend,
     };
-  },
-
-  // ========================================================
-  // FIRESTORE-FIRST ASYNC QUERIES & LIVE REALTIME LISTENERS
-  // ========================================================
-  fetchPasses: async (societyId: string): Promise<SmartVisitorPass[]> => {
-    try {
-      const passes = await visitorRepository.list(societyId);
-      if (passes && passes.length > 0) return passes;
-      return visitorService.getPasses(societyId);
-    } catch {
-      return visitorService.getPasses(societyId);
-    }
   },
 
   subscribePasses: (societyId: string, callback: (passes: SmartVisitorPass[]) => void): () => void =>

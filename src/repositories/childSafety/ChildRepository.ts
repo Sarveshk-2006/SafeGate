@@ -2,6 +2,13 @@ import type { FirestoreDataConverter, QueryDocumentSnapshot, SnapshotOptions } f
 import { BaseRepository } from '../BaseRepository';
 import type { ChildProfile } from '../../types/childSafety';
 
+/**
+ * @deprecated Legacy Firestore Child Safety repository (Phase B.2.3 Phase 3).
+ * Authoritative Child Safety data is now stored exclusively in PostgreSQL and accessed
+ * via `childSafetyService` (`src/services/childSafetyService.ts`).
+ * Retained temporarily for type/export compatibility only until Phase 7 retirement.
+ * Do NOT invoke `create` / `update` / `delete` on this repository for Child Safety workflows.
+ */
 export class ChildRepository extends BaseRepository<ChildProfile> {
   constructor() {
     super('children');

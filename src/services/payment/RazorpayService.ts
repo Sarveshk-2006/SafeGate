@@ -1,6 +1,7 @@
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../firebase/config';
 import { apiClient } from '../apiClient';
+import { authenticatedFetch } from '../authStorage';
 import type {
   CreateRazorpayOrderResponse,
   VerifyRazorpayPaymentRequest,
@@ -159,7 +160,7 @@ export class RazorpayService {
     }
 
     // REST fallback
-    const res = await fetch('/api/payments/razorpay/refund', {
+    const res = await authenticatedFetch('/api/payments/razorpay/refund', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),

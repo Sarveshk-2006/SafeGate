@@ -1,8 +1,18 @@
 -- ==============================================================================
--- AARIZO CommunityOS - Complete Initial Seed Data for PostgreSQL
--- Seeds Societies, Towers, Flats, Demo Roles, Staff, Domestic Workers,
--- Amenities, Visitor Passes, Billing, Maintenance, and Security Checkpoints
+-- ⚠️ AARIZO DEVELOPMENT & TESTING SEED DATA ONLY (03_seed.sql)
+-- WARNING: This script seeds pre-computed development demo personas and sample records.
+-- It must NEVER be executed against production or staging databases.
 -- ==============================================================================
+
+DO $$
+DECLARE
+  current_env TEXT := lower(trim(coalesce(current_setting('aarizo.environment', true), '')));
+BEGIN
+  -- Strict Fail-Closed Safeguard: Refuse execution unless explicitly authorized for local development or test
+  IF current_env NOT IN ('development', 'dev', 'test', 'local') THEN
+    RAISE EXCEPTION '[SECURITY] Execution of 03_seed.sql rejected: Demo seed data is strictly forbidden unless aarizo.environment is explicitly set to an authorized local development environment (current: "%").', current_env;
+  END IF;
+END $$;
 
 -- 1. Societies
 INSERT INTO societies (id, name, code, city, address, total_towers, total_flats, established_year, gate_count, amenities_count, status)
@@ -31,17 +41,21 @@ VALUES
 ('flat-gvs-c502', 'soc-gvs', 'tow-gvs-c', 'C-502', 5, '502', '2BHK', 1100.00, 'TENANT_OCCUPIED', 'ACTIVE')
 ON CONFLICT (id) DO NOTHING;
 
--- 4. Users (All 7 canonical roles)
-INSERT INTO users (id, society_id, name, email, phone, role, flat_number, flat_details, designation, status)
+-- 4. Users (All 7 canonical roles with secure pre-computed scrypt credentials)
+INSERT INTO users (id, society_id, name, email, phone, role, flat_number, flat_details, designation, status, password_hash, salt)
 VALUES
-('user-resident-01', 'soc-gvs', 'Sarvesh Kulkarni', 'sarvesh@greenvalley.com', '+919876543210', 'resident', 'B-1204', 'Tower B · Flat 1204', 'Flat Owner & Resident', 'ACTIVE'),
-('user-guard-01', 'soc-gvs', 'Officer R. Singh', 'guard1@greenvalley.com', '+919123456789', 'guard', NULL, 'Gate #1 North Terminal', 'Senior Gate Security Officer', 'ACTIVE'),
-('user-secretary-01', 'soc-gvs', 'Mayuri Udar', 'secretary@greenvalley.com', '+919820012345', 'secretary', 'A-101', 'Block A · Flat 101', 'Management Committee Secretary', 'ACTIVE'),
-('user-committee-01', 'soc-gvs', 'Rajesh Mehta', 'rajesh.committee@greenvalley.com', '+919900112233', 'committee', 'A-201', 'Tower A · Flat 201', 'Management Committee Member', 'ACTIVE'),
-('user-fm-01', 'soc-gvs', 'Suresh Patil', 'facility@greenvalley.com', '+919811223344', 'facility_manager', NULL, 'Facility Office Block B', 'Facility & Operations Manager', 'ACTIVE'),
-('user-vendor-01', 'soc-gvs', 'Priya Facility Care Ltd', 'priya.vendor@service.com', '+919844556677', 'vendor', NULL, 'Operations Desk Mumbai', 'Authorized Service Provider', 'ACTIVE'),
-('user-admin-01', NULL, 'Antigravity Super Admin', 'admin@aarizo.com', '+919800000001', 'admin', NULL, 'Global Platform Ops', 'Platform Master Administrator', 'ACTIVE')
-ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email;
+('user-resident-01', 'soc-gvs', 'Sarvesh Kulkarni', 'sarvesh@greenvalley.com', '+919876543210', 'resident', 'B-1204', 'Tower B · Flat 1204', 'Flat Owner & Resident', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$04172db7259306490d1266c3bee96ef34e1e1947035226e3a1c1015aaccd78d3', 'a76c947913cad8dcdeaedf7c1053ffa5'),
+('user-guard-01', 'soc-gvs', 'Officer R. Singh', 'guard1@greenvalley.com', '+919123456789', 'guard', NULL, 'Gate #1 North Terminal', 'Senior Gate Security Officer', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$a2b74583b4dc145b3b83af9da5591a396d7f1f012fd8d512f4ab9df22ab6bedf', '6664822d58f9f46336b3f3b33cfb11c2'),
+('user-secretary-01', 'soc-gvs', 'Mayuri Udar', 'secretary@greenvalley.com', '+919820012345', 'secretary', 'A-101', 'Block A · Flat 101', 'Management Committee Secretary', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$7ec507fce3ee48530365acae73e31d5ed4d7120e24c3db212ce2781b12644e2a', '603ae5103bb452c0acae497e0c289a96'),
+('user-committee-01', 'soc-gvs', 'Rajesh Mehta', 'rajesh.committee@greenvalley.com', '+919900112233', 'committee', 'A-201', 'Tower A · Flat 201', 'Management Committee Member', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$8d80fc9d9c77e6bac00cb37fc62df379ccdb9f425a3f7ecc84c389b6f0d8b3c2', 'ac420989a2ae6a22e82beb26722d95d5'),
+('user-fm-01', 'soc-gvs', 'Suresh Patil', 'facility@greenvalley.com', '+919811223344', 'facility_manager', NULL, 'Facility Office Block B', 'Facility & Operations Manager', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$1a4efc9d9a63cee4ec13b765e8eca2f0ab64cbd41cea1c77dec3f7eaf1fcba8a', 'e938d41fba977f417d063b83ab08ea01'),
+('user-vendor-01', 'soc-gvs', 'Priya Facility Care Ltd', 'priya.vendor@service.com', '+919844556677', 'vendor', NULL, 'Operations Desk Mumbai', 'Authorized Service Provider', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$280398d297eed1d4fa92a56b2e793a9023343a80a703bda58c8338728b884059', 'a0a5eb1b0fd863eb73bc580d5acbe989'),
+('user-admin-01', NULL, 'Antigravity Super Admin', 'admin@aarizo.com', '+919800000001', 'admin', NULL, 'Global Platform Ops', 'Platform Master Administrator', 'ACTIVE', '$scrypt$N=16384,r=8,p=1$2923c96c280d64c4880a142554ca6b1066067212fb0e4c33f04a39c1e1ca10ad', '0dd3c72a1353840e98757f070816d71c')
+ON CONFLICT (id) DO UPDATE SET 
+  name = EXCLUDED.name, 
+  email = EXCLUDED.email,
+  password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash),
+  salt = COALESCE(users.salt, EXCLUDED.salt);
 
 -- 5. Residents
 INSERT INTO residents (id, society_id, user_id, flat_id, name, phone, email, resident_type, move_in_date, is_verified, status)

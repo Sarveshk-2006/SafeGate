@@ -2,7 +2,6 @@
   "name": "dwellora",
   "private": true,
   "version": "1.0.0",
-
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -41,11 +40,13 @@
     "@types/node": "^24.13.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "@types/supertest": "^7.2.1",
     "@vitejs/plugin-react": "^6.1.0",
     "autoprefixer": "^10.6.1",
     "jest": "^30.5.2",
     "oxlint": "^1.79.0",
     "postcss": "^8.5.28",
+    "supertest": "^7.3.2",
     "tailwindcss": "^4.3.3",
     "ts-jest": "^29.4.12",
     "typescript": "~6.0.2",

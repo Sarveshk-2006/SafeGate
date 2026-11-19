@@ -5,7 +5,8 @@ export type VisitorVerificationStatus =
   | 'invalid'
   | 'expired'
   | 'cancelled'
-  | 'approval_required';
+  | 'approval_required'
+  | 'offline_unverified';
 
 export type GateDecision = 'approved' | 'rejected' | 'pending';
 

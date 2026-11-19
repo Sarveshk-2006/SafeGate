@@ -73,6 +73,98 @@ enum IncidentSeverity {
   CRITICAL
 }
 
+enum ChildGender {
+  MALE
+  FEMALE
+  OTHER
+  UNSPECIFIED
+
+  @@map("child_gender")
+}
+
+enum ChildStatus {
+  SAFE
+  OUT_OF_SOCIETY
+  MISSING
+  ARCHIVED
+
+  @@map("child_status")
+}
+
+enum ChildExitPermissionMode {
+  ESCORT_REQUIRED
+  SOLO_ALLOWED
+  TIMED_PASS_ONLY
+  UNKNOWN
+
+  @@map("child_exit_permission_mode")
+}
+
+enum PickupAuthorizationStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  ARCHIVED
+
+  @@map("pickup_authorization_status")
+}
+
+enum PickupIdVerificationStatus {
+  NOT_COLLECTED
+  UNVERIFIED
+  PENDING_REVIEW
+  VERIFIED
+  REJECTED
+
+  @@map("pickup_id_verification_status")
+}
+
+enum ChildGatePassStatus {
+  ACTIVE
+  USED
+  EXPIRED
+  REVOKED
+  ARCHIVED
+
+  @@map("child_gate_pass_status")
+}
+
+enum ChildExitOutcome {
+  ALLOWED
+  DENIED
+  MISSING_ALERT_BLOCKED
+  VERIFICATION_UNAVAILABLE
+
+  @@map("child_exit_outcome")
+}
+
+enum ChildVerificationChannel {
+  ONLINE_QR_TOKEN
+  ONLINE_PASS_CODE_ASSISTED
+  MANUAL_OVERRIDE_DENIED
+  BACKEND_UNAVAILABLE
+
+  @@map("child_verification_channel")
+}
+
+enum ChildAlertType {
+  MISSING_CHILD
+  UNATTENDED_CHILD
+  UNAUTHORIZED_EXIT_ATTEMPT
+  EMERGENCY_SOS
+
+  @@map("child_alert_type")
+}
+
+enum ChildAlertStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  RESOLVED
+  FALSE_ALARM
+
+  @@map("child_alert_status")
+}
+
 model Society {
   id              String         @id @default(uuid())
   name            String
@@ -110,8 +202,13 @@ model Society {
   announcements   Announcement[]
   communityEvents CommunityEvent[]
   advertisements  Advertisement[]
-  payments        Payment[]
-  entityRecords   EntityRecord[]
+  payments            Payment[]
+  entityRecords       EntityRecord[]
+  childProfiles       ChildProfile[]
+  childPickups        ChildAuthorizedPickup[]
+  childGatePasses     ChildGatePass[]
+  childExitLogs       ChildExitLog[]
+  childSafetyAlerts   ChildSafetyAlert[]
 
   @@map("societies")
 }
@@ -156,8 +253,10 @@ model Flat {
   billingInvoices  BillingInvoice[]
   visitorPasses    VisitorPass[]
   parcels          Parcel[]
+  childProfiles    ChildProfile[]
 
   @@unique([towerId, flatNumber])
+  @@unique([societyId, id], map: "uq_flats_society_id")
   @@map("flats")
 }
 
@@ -188,8 +287,18 @@ model User {
   staff       Staff[]
   vendors     Vendor[]
   notifications Notification[]
-  auditLogs   AuditLog[]
-  payments    Payment[]
+  auditLogs                AuditLog[]
+  payments                 Payment[]
+  guardianChildProfiles    ChildProfile[]          @relation("ChildProfileGuardianUser")
+  archivedChildProfiles    ChildProfile[]          @relation("ChildProfileArchivedBy")
+  createdChildPickups      ChildAuthorizedPickup[] @relation("ChildPickupCreatedBy")
+  verifiedChildPickups     ChildAuthorizedPickup[] @relation("ChildPickupVerifiedBy")
+  createdChildPasses       ChildGatePass[]         @relation("ChildPassCreatedBy")
+  revokedChildPasses       ChildGatePass[]         @relation("ChildPassRevokedBy")
+  recordedChildExits       ChildExitLog[]          @relation("ChildExitGuard")
+  reportedChildAlerts      ChildSafetyAlert[]      @relation("ChildAlertReportedBy")
+  acknowledgedChildAlerts  ChildSafetyAlert[]      @relation("ChildAlertAcknowledgedBy")
+  resolvedChildAlerts      ChildSafetyAlert[]      @relation("ChildAlertResolvedBy")
 
   @@map("users")
 }
@@ -221,7 +330,9 @@ model Resident {
   billingInvoices       BillingInvoice[]
   maintenanceTickets    MaintenanceTicket[]
   payments              Payment[]
+  childProfiles         ChildProfile[]
 
+  @@unique([societyId, id], map: "uq_residents_society_id")
   @@map("residents")
 }
 
@@ -344,6 +455,9 @@ model VisitorPass {
   resident      Resident?  @relation(fields: [residentId], references: [id], onDelete: SetNull)
   flat          Flat?      @relation(fields: [flatId], references: [id], onDelete: SetNull)
 
+  @@index([societyId, validFrom, validTo], map: "idx_passes_society_validity")
+  @@index([societyId, qrCodeHash], map: "idx_passes_society_qr")
+  @@index([societyId, phone], map: "idx_passes_society_phone")
   @@map("visitor_passes")
 }
 
@@ -492,7 +606,9 @@ model EmergencyIncident {
   updatedAt      DateTime         @updatedAt @map("updated_at")
 
   society        Society          @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  childAlerts    ChildSafetyAlert[]
 
+  @@unique([societyId, id], map: "uq_emergency_incidents_society_id")
   @@map("emergency_incidents")
 }
 
@@ -944,4 +1060,202 @@ model OutboxEvent {
   @@index([status, createdAt])
   @@index([societyId, eventType])
   @@map("outbox_events")
+}
+
+// ==========================================
+// 🛡️ CHILD SAFETY & BIOMETRIC GATE RADAR
+// ==========================================
+
+model ChildProfile {
+  id                 String                  @id @default(uuid())
+  societyId          String                  @map("society_id")
+  residentId         String?                 @map("resident_id")
+  flatId             String?                 @map("flat_id")
+  guardianUserId     String?                 @map("guardian_user_id")
+  flatNumber         String                  @map("flat_number")
+  fullName           String                  @map("full_name")
+  dateOfBirth        DateTime?               @map("date_of_birth") @db.Timestamptz(3)
+  reportedAge        Int?                    @map("reported_age")
+  gender             ChildGender             @default(UNSPECIFIED)
+  photoUrl           String?                 @map("photo_url")
+  medicalNotes       String?                 @map("medical_notes")
+  status             ChildStatus             @default(SAFE)
+  exitPermissionMode ChildExitPermissionMode @default(ESCORT_REQUIRED) @map("exit_permission_mode")
+  allowedSoloExit    Boolean                 @default(false) @map("allowed_solo_exit")
+  guardianName       String                  @map("guardian_name")
+  guardianPhone      String                  @map("guardian_phone")
+  emergencyPhone     String?                 @map("emergency_phone")
+  secondaryGuardians Json?                   @map("secondary_guardians")
+  emergencyContacts  Json?                   @map("emergency_contacts")
+  notes              String?
+  legacySource       String?                 @map("legacy_source")
+  legacySourceId     String?                 @map("legacy_source_id")
+  archivedAt         DateTime?               @map("archived_at") @db.Timestamptz(3)
+  archivedById       String?                 @map("archived_by_id")
+  createdAt          DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime                @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  society            Society                 @relation(fields: [societyId], references: [id], onDelete: Restrict)
+  resident           Resident?               @relation(fields: [societyId, residentId], references: [societyId, id], onDelete: Restrict)
+  flat               Flat?                   @relation(fields: [societyId, flatId], references: [societyId, id], onDelete: Restrict)
+  guardianUser       User?                   @relation("ChildProfileGuardianUser", fields: [guardianUserId], references: [id], onDelete: SetNull)
+  archivedBy         User?                   @relation("ChildProfileArchivedBy", fields: [archivedById], references: [id], onDelete: SetNull)
+  pickups            ChildAuthorizedPickup[]
+  passes             ChildGatePass[]
+  exitLogs           ChildExitLog[]
+  alerts             ChildSafetyAlert[]
+
+  @@unique([societyId, id], map: "uq_child_profiles_society_id")
+  @@unique([societyId, legacySource, legacySourceId], map: "uq_child_profiles_legacy_source")
+  @@index([societyId, status], map: "idx_child_profiles_society_status")
+  @@index([societyId, flatNumber], map: "idx_child_profiles_society_flat")
+  @@index([residentId], map: "idx_child_profiles_resident")
+  @@map("child_profiles")
+}
+
+model ChildAuthorizedPickup {
+  id                   String                     @id @default(uuid())
+  societyId            String                     @map("society_id")
+  childId              String                     @map("child_id")
+  name                 String
+  phone                String
+  relationship         String
+  idDocumentType       String?                    @map("id_document_type")
+  idDocumentLast4      String?                    @map("id_document_last4") @db.VarChar(4)
+  idDocumentHash       String?                    @map("id_document_hash")
+  idVerificationStatus PickupIdVerificationStatus @default(NOT_COLLECTED) @map("id_verification_status")
+  idVerifiedAt         DateTime?                  @map("id_verified_at") @db.Timestamptz(3)
+  verifiedById         String?                    @map("verified_by_id")
+  createdById          String?                    @map("created_by_id")
+  photoUrl             String?                    @map("photo_url")
+  status               PickupAuthorizationStatus  @default(ACTIVE)
+  validUntil           DateTime?                  @map("valid_until") @db.Timestamptz(3)
+  notes                String?
+  archivedAt           DateTime?                  @map("archived_at") @db.Timestamptz(3)
+  createdAt            DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime                   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  society              Society                    @relation(fields: [societyId], references: [id], onDelete: Restrict)
+  child                ChildProfile               @relation(fields: [societyId, childId], references: [societyId, id], onDelete: Restrict)
+  createdBy            User?                      @relation("ChildPickupCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  verifiedBy           User?                      @relation("ChildPickupVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+  passes               ChildGatePass[]
+  exitLogs             ChildExitLog[]
+
+  @@unique([societyId, id], map: "uq_child_pickups_society_id")
+  @@unique([societyId, childId, id], map: "uq_child_pickups_society_child_id")
+  @@index([childId, status], map: "idx_child_pickups_child_status")
+  @@index([societyId], map: "idx_child_pickups_society")
+  @@index([societyId, phone], map: "idx_child_pickups_society_phone")
+  @@map("child_authorized_pickups")
+}
+
+model ChildGatePass {
+  id                String                 @id @default(uuid())
+  societyId         String                 @map("society_id")
+  childId           String                 @map("child_id")
+  pickupPersonId    String?                @map("pickup_person_id")
+  passCode          String                 @map("pass_code") // Human-readable display/reference code ONLY — never standalone gate authorization
+  tokenHash         String                 @unique @map("token_hash") // Server-keyed HMAC-SHA256 / SHA-256 hex digest of >=256-bit CSPRNG bearer token
+  pickupPersonName  String                 @map("pickup_person_name")
+  pickupPersonPhone String?                @map("pickup_person_phone")
+  validFrom         DateTime               @map("valid_from") @db.Timestamptz(3)
+  validUntil        DateTime               @map("valid_until") @db.Timestamptz(3)
+  status            ChildGatePassStatus    @default(ACTIVE)
+  maxUses           Int                    @default(1) @map("max_uses")
+  currentUses       Int                    @default(0) @map("current_uses")
+  firstUsedAt       DateTime?              @map("first_used_at") @db.Timestamptz(3)
+  lastUsedAt        DateTime?              @map("last_used_at") @db.Timestamptz(3)
+  revokedAt         DateTime?              @map("revoked_at") @db.Timestamptz(3)
+  revokedById       String?                @map("revoked_by_id")
+  revocationReason  String?                @map("revocation_reason")
+  createdById       String?                @map("created_by_id")
+  notes             String?
+  archivedAt        DateTime?              @map("archived_at") @db.Timestamptz(3)
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  society           Society                @relation(fields: [societyId], references: [id], onDelete: Restrict)
+  child             ChildProfile           @relation(fields: [societyId, childId], references: [societyId, id], onDelete: Restrict)
+  pickupPerson      ChildAuthorizedPickup? @relation(fields: [societyId, childId, pickupPersonId], references: [societyId, childId, id], onDelete: Restrict)
+  createdBy         User?                  @relation("ChildPassCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  revokedBy         User?                  @relation("ChildPassRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+  exitLogs          ChildExitLog[]
+
+  @@unique([societyId, id], map: "uq_child_passes_society_id")
+  @@unique([societyId, passCode], map: "uq_child_passes_society_code")
+  @@index([societyId, status], map: "idx_child_passes_society_status")
+  @@index([childId], map: "idx_child_passes_child")
+  @@index([societyId, validFrom, validUntil], map: "idx_child_passes_validity")
+  @@map("child_gate_passes")
+}
+
+model ChildExitLog {
+  id                  String                   @id @default(uuid())
+  societyId           String                   @map("society_id")
+  childId             String?                  @map("child_id")
+  passId              String?                  @map("pass_id")
+  pickupPersonId      String?                  @map("pickup_person_id")
+  childName           String                   @map("child_name")
+  flatNumber          String                   @map("flat_number")
+  pickupPersonName    String                   @map("pickup_person_name")
+  pickupPersonPhone   String?                  @map("pickup_person_phone")
+  gateId              String                   @map("gate_id")
+  guardId             String?                  @map("guard_id")
+  guardName           String                   @map("guard_name")
+  outcome             ChildExitOutcome         @map("outcome")
+  verificationChannel ChildVerificationChannel @default(ONLINE_QR_TOKEN) @map("verification_channel")
+  denialReason        String?                  @map("denial_reason")
+  notes               String?
+  timestamp           DateTime                 @default(now()) @db.Timestamptz(3)
+
+  society             Society                  @relation(fields: [societyId], references: [id], onDelete: Restrict)
+  child               ChildProfile?            @relation(fields: [societyId, childId], references: [societyId, id], onDelete: Restrict)
+  pass                ChildGatePass?           @relation(fields: [societyId, passId], references: [societyId, id], onDelete: Restrict)
+  pickupPerson        ChildAuthorizedPickup?   @relation(fields: [societyId, pickupPersonId], references: [societyId, id], onDelete: Restrict)
+  guard               User?                    @relation("ChildExitGuard", fields: [guardId], references: [id], onDelete: SetNull)
+
+  @@index([societyId, timestamp], map: "idx_child_exit_logs_society_time")
+  @@index([childId], map: "idx_child_exit_logs_child")
+  @@index([passId], map: "idx_child_exit_logs_pass")
+  @@index([pickupPersonId], map: "idx_child_exit_logs_pickup")
+  @@map("child_exit_logs")
+}
+
+model ChildSafetyAlert {
+  id                  String             @id @default(uuid())
+  societyId           String             @map("society_id")
+  childId             String?            @map("child_id")
+  reportedById        String?            @map("reported_by_id")
+  reportedByName      String?            @map("reported_by_name")
+  childName           String             @map("child_name")
+  flatNumber          String             @map("flat_number")
+  alertType           ChildAlertType     @map("alert_type")
+  severity            IncidentSeverity   @default(CRITICAL)
+  status              ChildAlertStatus   @default(ACTIVE)
+  location            String
+  description         String?
+  lastSeenDetails     String?            @map("last_seen_details")
+  acknowledgedAt      DateTime?          @map("acknowledged_at") @db.Timestamptz(3)
+  acknowledgedById    String?            @map("acknowledged_by_id")
+  acknowledgedByName  String?            @map("acknowledged_by_name")
+  resolvedAt          DateTime?          @map("resolved_at") @db.Timestamptz(3)
+  resolvedById        String?            @map("resolved_by_id")
+  resolvedByName      String?            @map("resolved_by_name")
+  resolutionNotes     String?            @map("resolution_notes")
+  emergencyIncidentId String?            @map("emergency_incident_id")
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  society             Society            @relation(fields: [societyId], references: [id], onDelete: Restrict)
+  child               ChildProfile?      @relation(fields: [societyId, childId], references: [societyId, id], onDelete: Restrict)
+  reportedBy          User?              @relation("ChildAlertReportedBy", fields: [reportedById], references: [id], onDelete: SetNull)
+  acknowledgedBy      User?              @relation("ChildAlertAcknowledgedBy", fields: [acknowledgedById], references: [id], onDelete: SetNull)
+  resolvedBy          User?              @relation("ChildAlertResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+  incident            EmergencyIncident? @relation(fields: [societyId, emergencyIncidentId], references: [societyId, id], onDelete: Restrict)
+
+  @@index([societyId, status], map: "idx_child_alerts_society_status")
+  @@index([childId], map: "idx_child_alerts_child")
+  @@index([societyId, createdAt], map: "idx_child_alerts_society_time")
+  @@map("child_safety_alerts")
 }

@@ -93,6 +93,98 @@ DO $$ BEGIN
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_gender' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_gender AS ENUM ('MALE', 'FEMALE', 'OTHER', 'UNSPECIFIED');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_status AS ENUM ('SAFE', 'OUT_OF_SOCIETY', 'MISSING', 'ARCHIVED');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_exit_permission_mode' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_exit_permission_mode AS ENUM ('ESCORT_REQUIRED', 'SOLO_ALLOWED', 'TIMED_PASS_ONLY', 'UNKNOWN');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'pickup_authorization_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE pickup_authorization_status AS ENUM ('ACTIVE', 'REVOKED', 'EXPIRED', 'ARCHIVED');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'pickup_id_verification_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE pickup_id_verification_status AS ENUM ('NOT_COLLECTED', 'UNVERIFIED', 'PENDING_REVIEW', 'VERIFIED', 'REJECTED');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_gate_pass_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_gate_pass_status AS ENUM ('ACTIVE', 'USED', 'EXPIRED', 'REVOKED', 'ARCHIVED');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_exit_outcome' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_exit_outcome AS ENUM ('ALLOWED', 'DENIED', 'MISSING_ALERT_BLOCKED', 'VERIFICATION_UNAVAILABLE');
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_verification_channel' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_verification_channel AS ENUM (
+            'ONLINE_QR_TOKEN',
+            'ONLINE_PASS_CODE_ASSISTED',
+            'MANUAL_OVERRIDE_DENIED',
+            'BACKEND_UNAVAILABLE'
+        );
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_alert_type' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_alert_type AS ENUM (
+            'MISSING_CHILD',
+            'UNATTENDED_CHILD',
+            'UNAUTHORIZED_EXIT_ATTEMPT',
+            'EMERGENCY_SOS'
+        );
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'child_alert_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE child_alert_status AS ENUM ('ACTIVE', 'ACKNOWLEDGED', 'RESOLVED', 'FALSE_ALARM');
+    END IF;
+END $$;
+
 -- ==============================================================================
 -- 3. CORE TENANT & SOCIETY MANAGEMENT
 -- ==============================================================================
@@ -141,7 +233,8 @@ CREATE TABLE IF NOT EXISTS flats (
     status entity_status DEFAULT 'ACTIVE',
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_flat_tower_number UNIQUE (tower_id, flat_number)
+    CONSTRAINT uq_flat_tower_number UNIQUE (tower_id, flat_number),
+    CONSTRAINT uq_flats_society_id UNIQUE (society_id, id)
 );
 
 -- ==============================================================================
@@ -164,6 +257,8 @@ CREATE TABLE IF NOT EXISTS users (
     status entity_status DEFAULT 'ACTIVE',
     preferences JSONB DEFAULT '{"theme": "dark", "notifications": true}'::jsonb,
     metadata JSONB DEFAULT '{}'::jsonb,
+    password_hash VARCHAR(255),
+    salt VARCHAR(64),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -183,7 +278,8 @@ CREATE TABLE IF NOT EXISTS residents (
     is_verified BOOLEAN DEFAULT FALSE,
     status entity_status DEFAULT 'ACTIVE',
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_residents_society_id UNIQUE (society_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS family_members (
@@ -336,6 +432,200 @@ CREATE TABLE IF NOT EXISTS child_safety (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Normalized Child Safety Relational Architecture (Phase B.2.1 Remediated)
+CREATE TABLE IF NOT EXISTS child_profiles (
+    id TEXT PRIMARY KEY,
+    society_id TEXT NOT NULL,
+    resident_id TEXT,
+    flat_id TEXT,
+    guardian_user_id TEXT,
+    flat_number TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    date_of_birth TIMESTAMPTZ(3),
+    reported_age INTEGER,
+    gender child_gender NOT NULL DEFAULT 'UNSPECIFIED',
+    photo_url TEXT,
+    medical_notes TEXT,
+    status child_status NOT NULL DEFAULT 'SAFE',
+    exit_permission_mode child_exit_permission_mode NOT NULL DEFAULT 'ESCORT_REQUIRED',
+    allowed_solo_exit BOOLEAN NOT NULL DEFAULT FALSE,
+    guardian_name TEXT NOT NULL,
+    guardian_phone TEXT NOT NULL,
+    emergency_phone TEXT,
+    secondary_guardians JSONB,
+    emergency_contacts JSONB,
+    notes TEXT,
+    legacy_source TEXT,
+    legacy_source_id TEXT,
+    archived_at TIMESTAMPTZ(3),
+    archived_by_id TEXT,
+    created_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_child_profiles_society_id UNIQUE (society_id, id),
+    CONSTRAINT uq_child_profiles_legacy_source UNIQUE (society_id, legacy_source, legacy_source_id),
+    CONSTRAINT child_profiles_society_id_fkey FOREIGN KEY (society_id) REFERENCES societies(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_profiles_society_id_resident_id_fkey FOREIGN KEY (society_id, resident_id) REFERENCES residents(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_profiles_society_id_flat_id_fkey FOREIGN KEY (society_id, flat_id) REFERENCES flats(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_profiles_guardian_user_id_fkey FOREIGN KEY (guardian_user_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT child_profiles_archived_by_id_fkey FOREIGN KEY (archived_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT chk_child_profiles_active_owner CHECK (status = 'ARCHIVED' OR archived_at IS NOT NULL OR (resident_id IS NOT NULL AND flat_id IS NOT NULL)),
+    CONSTRAINT chk_child_profiles_archive_consistency CHECK ((status = 'ARCHIVED') = (archived_at IS NOT NULL)),
+    CONSTRAINT chk_child_profiles_reported_age CHECK (reported_age IS NULL OR (reported_age >= 0 AND reported_age <= 25)),
+    CONSTRAINT chk_child_profiles_dob_not_future CHECK (date_of_birth IS NULL OR date_of_birth <= CURRENT_TIMESTAMP)
+);
+
+CREATE INDEX IF NOT EXISTS idx_child_profiles_society_status ON child_profiles(society_id, status);
+CREATE INDEX IF NOT EXISTS idx_child_profiles_society_flat ON child_profiles(society_id, flat_number);
+CREATE INDEX IF NOT EXISTS idx_child_profiles_resident ON child_profiles(resident_id);
+
+CREATE TABLE IF NOT EXISTS child_authorized_pickups (
+    id TEXT PRIMARY KEY,
+    society_id TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    relationship TEXT NOT NULL,
+    id_document_type TEXT,
+    id_document_last4 VARCHAR(4),
+    id_document_hash TEXT,
+    id_verification_status pickup_id_verification_status NOT NULL DEFAULT 'NOT_COLLECTED',
+    id_verified_at TIMESTAMPTZ(3),
+    verified_by_id TEXT,
+    created_by_id TEXT,
+    photo_url TEXT,
+    status pickup_authorization_status NOT NULL DEFAULT 'ACTIVE',
+    valid_until TIMESTAMPTZ(3),
+    notes TEXT,
+    archived_at TIMESTAMPTZ(3),
+    created_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_child_pickups_society_id UNIQUE (society_id, id),
+    CONSTRAINT uq_child_pickups_society_child_id UNIQUE (society_id, child_id, id),
+    CONSTRAINT child_authorized_pickups_society_id_fkey FOREIGN KEY (society_id) REFERENCES societies(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_authorized_pickups_society_id_child_id_fkey FOREIGN KEY (society_id, child_id) REFERENCES child_profiles(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_authorized_pickups_created_by_id_fkey FOREIGN KEY (created_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT child_authorized_pickups_verified_by_id_fkey FOREIGN KEY (verified_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT chk_child_pickups_archive_consistency CHECK ((status = 'ARCHIVED') = (archived_at IS NOT NULL)),
+    CONSTRAINT chk_child_pickups_last4_len CHECK (id_document_last4 IS NULL OR char_length(id_document_last4) BETWEEN 1 AND 4),
+    CONSTRAINT chk_child_pickups_hash_format CHECK (id_document_hash IS NULL OR id_document_hash ~ '^[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_child_pickups_child_status ON child_authorized_pickups(child_id, status);
+CREATE INDEX IF NOT EXISTS idx_child_pickups_society ON child_authorized_pickups(society_id);
+CREATE INDEX IF NOT EXISTS idx_child_pickups_society_phone ON child_authorized_pickups(society_id, phone);
+
+CREATE TABLE IF NOT EXISTS child_gate_passes (
+    id TEXT PRIMARY KEY,
+    society_id TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    pickup_person_id TEXT,
+    pass_code TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    pickup_person_name TEXT NOT NULL,
+    pickup_person_phone TEXT,
+    valid_from TIMESTAMPTZ(3) NOT NULL,
+    valid_until TIMESTAMPTZ(3) NOT NULL,
+    status child_gate_pass_status NOT NULL DEFAULT 'ACTIVE',
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    current_uses INTEGER NOT NULL DEFAULT 0,
+    first_used_at TIMESTAMPTZ(3),
+    last_used_at TIMESTAMPTZ(3),
+    revoked_at TIMESTAMPTZ(3),
+    revoked_by_id TEXT,
+    revocation_reason TEXT,
+    created_by_id TEXT,
+    notes TEXT,
+    archived_at TIMESTAMPTZ(3),
+    created_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_child_passes_society_id UNIQUE (society_id, id),
+    CONSTRAINT uq_child_passes_society_code UNIQUE (society_id, pass_code),
+    CONSTRAINT child_gate_passes_token_hash_key UNIQUE (token_hash),
+    CONSTRAINT child_gate_passes_society_id_fkey FOREIGN KEY (society_id) REFERENCES societies(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_gate_passes_society_id_child_id_fkey FOREIGN KEY (society_id, child_id) REFERENCES child_profiles(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_gate_passes_society_id_child_id_pickup_person_id_fkey FOREIGN KEY (society_id, child_id, pickup_person_id) REFERENCES child_authorized_pickups(society_id, child_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_gate_passes_created_by_id_fkey FOREIGN KEY (created_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT child_gate_passes_revoked_by_id_fkey FOREIGN KEY (revoked_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT chk_child_passes_validity_window CHECK (valid_until > valid_from),
+    CONSTRAINT chk_child_passes_max_uses_positive CHECK (max_uses >= 1),
+    CONSTRAINT chk_child_passes_uses_bounds CHECK (current_uses >= 0 AND current_uses <= max_uses),
+    CONSTRAINT chk_child_passes_token_hash_format CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_child_passes_archive_consistency CHECK ((status = 'ARCHIVED') = (archived_at IS NOT NULL)),
+    CONSTRAINT chk_child_passes_revoke_consistency CHECK (status <> 'REVOKED' OR revoked_at IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_child_passes_society_status ON child_gate_passes(society_id, status);
+CREATE INDEX IF NOT EXISTS idx_child_passes_child ON child_gate_passes(child_id);
+CREATE INDEX IF NOT EXISTS idx_child_passes_validity ON child_gate_passes(society_id, valid_from, valid_until);
+
+CREATE TABLE IF NOT EXISTS child_exit_logs (
+    id TEXT PRIMARY KEY,
+    society_id TEXT NOT NULL,
+    child_id TEXT,
+    pass_id TEXT,
+    pickup_person_id TEXT,
+    child_name TEXT NOT NULL,
+    flat_number TEXT NOT NULL,
+    pickup_person_name TEXT NOT NULL,
+    pickup_person_phone TEXT,
+    gate_id TEXT NOT NULL,
+    guard_id TEXT,
+    guard_name TEXT NOT NULL,
+    outcome child_exit_outcome NOT NULL,
+    verification_channel child_verification_channel NOT NULL DEFAULT 'ONLINE_QR_TOKEN',
+    denial_reason TEXT,
+    notes TEXT,
+    timestamp TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT child_exit_logs_society_id_fkey FOREIGN KEY (society_id) REFERENCES societies(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_exit_logs_society_id_child_id_fkey FOREIGN KEY (society_id, child_id) REFERENCES child_profiles(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_exit_logs_society_id_pass_id_fkey FOREIGN KEY (society_id, pass_id) REFERENCES child_gate_passes(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_exit_logs_society_id_pickup_person_id_fkey FOREIGN KEY (society_id, pickup_person_id) REFERENCES child_authorized_pickups(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_exit_logs_guard_id_fkey FOREIGN KEY (guard_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT chk_child_exit_logs_unavailable_channel CHECK (verification_channel <> 'BACKEND_UNAVAILABLE' OR outcome = 'VERIFICATION_UNAVAILABLE')
+);
+
+CREATE INDEX IF NOT EXISTS idx_child_exit_logs_society_time ON child_exit_logs(society_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_child_exit_logs_child ON child_exit_logs(child_id);
+CREATE INDEX IF NOT EXISTS idx_child_exit_logs_pass ON child_exit_logs(pass_id);
+CREATE INDEX IF NOT EXISTS idx_child_exit_logs_pickup ON child_exit_logs(pickup_person_id);
+
+CREATE TABLE IF NOT EXISTS child_safety_alerts (
+    id TEXT PRIMARY KEY,
+    society_id TEXT NOT NULL,
+    child_id TEXT,
+    reported_by_id TEXT,
+    reported_by_name TEXT,
+    child_name TEXT NOT NULL,
+    flat_number TEXT NOT NULL,
+    alert_type child_alert_type NOT NULL,
+    severity incident_severity NOT NULL DEFAULT 'CRITICAL',
+    status child_alert_status NOT NULL DEFAULT 'ACTIVE',
+    location TEXT NOT NULL,
+    description TEXT,
+    last_seen_details TEXT,
+    acknowledged_at TIMESTAMPTZ(3),
+    acknowledged_by_id TEXT,
+    acknowledged_by_name TEXT,
+    resolved_at TIMESTAMPTZ(3),
+    resolved_by_id TEXT,
+    resolved_by_name TEXT,
+    resolution_notes TEXT,
+    emergency_incident_id TEXT,
+    created_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT child_safety_alerts_society_id_fkey FOREIGN KEY (society_id) REFERENCES societies(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_safety_alerts_society_id_child_id_fkey FOREIGN KEY (society_id, child_id) REFERENCES child_profiles(society_id, id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT child_safety_alerts_reported_by_id_fkey FOREIGN KEY (reported_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT child_safety_alerts_acknowledged_by_id_fkey FOREIGN KEY (acknowledged_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT child_safety_alerts_resolved_by_id_fkey FOREIGN KEY (resolved_by_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT chk_child_alerts_ack_consistency CHECK (status <> 'ACKNOWLEDGED' OR acknowledged_at IS NOT NULL),
+    CONSTRAINT chk_child_alerts_resolved_consistency CHECK ((status NOT IN ('RESOLVED', 'FALSE_ALARM')) OR resolved_at IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_child_alerts_society_status ON child_safety_alerts(society_id, status);
+CREATE INDEX IF NOT EXISTS idx_child_alerts_child ON child_safety_alerts(child_id);
+CREATE INDEX IF NOT EXISTS idx_child_alerts_society_time ON child_safety_alerts(society_id, created_at);
 
 -- ==============================================================================
 -- 7. BILLING, INVOICES & PAYMENTS
@@ -607,8 +897,25 @@ CREATE TABLE IF NOT EXISTS emergency_incidents (
     dispatch_status VARCHAR(50) DEFAULT 'DISPATCHED',
     resolved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_emergency_incidents_society_id UNIQUE (society_id, id)
 );
+
+-- Link child_safety_alerts -> emergency_incidents after emergency_incidents is defined
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        WHERE c.conname = 'child_safety_alerts_society_id_emergency_incident_id_fkey'
+          AND c.connamespace = current_schema()::regnamespace
+          AND c.conrelid = to_regclass(format('%I.%I', current_schema(), 'child_safety_alerts'))
+    ) THEN
+        ALTER TABLE child_safety_alerts
+            ADD CONSTRAINT child_safety_alerts_society_id_emergency_incident_id_fkey
+            FOREIGN KEY (society_id, emergency_incident_id)
+            REFERENCES emergency_incidents(society_id, id)
+            ON DELETE RESTRICT ON UPDATE CASCADE;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS notifications (
     id VARCHAR(64) PRIMARY KEY,
@@ -646,6 +953,8 @@ CREATE INDEX IF NOT EXISTS idx_residents_society_flat ON residents(society_id, f
 CREATE INDEX IF NOT EXISTS idx_flats_society_tower ON flats(society_id, tower_id);
 CREATE INDEX IF NOT EXISTS idx_passes_society_validity ON visitor_passes(society_id, valid_from, valid_to);
 CREATE INDEX IF NOT EXISTS idx_passes_phone ON visitor_passes(phone);
+CREATE INDEX IF NOT EXISTS idx_passes_society_qr ON visitor_passes(society_id, qr_code_hash);
+CREATE INDEX IF NOT EXISTS idx_passes_society_phone ON visitor_passes(society_id, phone);
 CREATE INDEX IF NOT EXISTS idx_parcels_society_resident ON parcels(society_id, resident_id, status);
 CREATE INDEX IF NOT EXISTS idx_invoices_society_resident ON billing_invoices(society_id, resident_id, status);
 CREATE INDEX IF NOT EXISTS idx_tickets_society_status ON maintenance_tickets(society_id, status, priority);
@@ -678,3 +987,54 @@ BEGIN
         EXECUTE format('CREATE TRIGGER trg_set_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE PROCEDURE set_updated_at();', t);
     END LOOP;
 END $$;
+
+-- ==============================================================================
+-- 14. CHILD SAFETY CROSS-SOCIETY ACTOR VALIDATION TRIGGER (PHASE B.2.1)
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION enforce_child_safety_actor_tenant()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_col TEXT;
+    v_actor_id TEXT;
+    v_actor_society TEXT;
+    v_row JSONB := to_jsonb(NEW);
+BEGIN
+    FOREACH v_col IN ARRAY TG_ARGV LOOP
+        v_actor_id := v_row ->> v_col;
+        IF v_actor_id IS NOT NULL THEN
+            SELECT society_id INTO v_actor_society FROM users WHERE id = v_actor_id;
+            IF FOUND AND v_actor_society IS NOT NULL AND v_actor_society <> NEW.society_id THEN
+                RAISE EXCEPTION 'Cross-society actor reference rejected on %.%: user % belongs to society %, target row belongs to society %',
+                    TG_TABLE_NAME, v_col, v_actor_id, v_actor_society, NEW.society_id
+                    USING ERRCODE = '23514';
+            END IF;
+        END IF;
+    END LOOP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_child_profiles_actor_tenant ON child_profiles;
+CREATE TRIGGER trg_child_profiles_actor_tenant
+    BEFORE INSERT OR UPDATE ON child_profiles
+    FOR EACH ROW EXECUTE FUNCTION enforce_child_safety_actor_tenant('guardian_user_id', 'archived_by_id');
+
+DROP TRIGGER IF EXISTS trg_child_pickups_actor_tenant ON child_authorized_pickups;
+CREATE TRIGGER trg_child_pickups_actor_tenant
+    BEFORE INSERT OR UPDATE ON child_authorized_pickups
+    FOR EACH ROW EXECUTE FUNCTION enforce_child_safety_actor_tenant('created_by_id', 'verified_by_id');
+
+DROP TRIGGER IF EXISTS trg_child_passes_actor_tenant ON child_gate_passes;
+CREATE TRIGGER trg_child_passes_actor_tenant
+    BEFORE INSERT OR UPDATE ON child_gate_passes
+    FOR EACH ROW EXECUTE FUNCTION enforce_child_safety_actor_tenant('created_by_id', 'revoked_by_id');
+
+DROP TRIGGER IF EXISTS trg_child_exit_logs_actor_tenant ON child_exit_logs;
+CREATE TRIGGER trg_child_exit_logs_actor_tenant
+    BEFORE INSERT OR UPDATE ON child_exit_logs
+    FOR EACH ROW EXECUTE FUNCTION enforce_child_safety_actor_tenant('guard_id');
+
+DROP TRIGGER IF EXISTS trg_child_alerts_actor_tenant ON child_safety_alerts;
+CREATE TRIGGER trg_child_alerts_actor_tenant
+    BEFORE INSERT OR UPDATE ON child_safety_alerts
+    FOR EACH ROW EXECUTE FUNCTION enforce_child_safety_actor_tenant('reported_by_id', 'acknowledged_by_id', 'resolved_by_id');

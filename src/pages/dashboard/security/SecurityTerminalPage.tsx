@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Shield,
@@ -65,79 +65,128 @@ export const SecurityTerminalPage: React.FC = () => {
   const [blPhone, setBlPhone] = useState('');
   const [blReason, setBlReason] = useState('');
 
-  const refreshData = () => {
-    setPasses(visitorService.getPasses(currentSocietyId));
+  const latestRequestIdRef = useRef(0);
+  const debounceTimerRef = useRef<any>(null);
+
+  const performAuthoritativeRefresh = useCallback(async () => {
+    const requestId = ++latestRequestIdRef.current;
+    try {
+      const livePasses = await visitorService.fetchPasses(currentSocietyId);
+      if (latestRequestIdRef.current === requestId) {
+        setPasses(livePasses);
+      }
+    } catch {
+      if (latestRequestIdRef.current === requestId) {
+        setPasses(visitorService.getPasses(currentSocietyId));
+      }
+    }
     setBlacklist(visitorService.getBlacklist(currentSocietyId));
     setLockdown(visitorService.getLockdownState(currentSocietyId));
-  };
-
-  useEffect(() => {
-    refreshData();
-    const unsub = realtimeService.subscribe('*', () => {
-      refreshData();
-    });
-    return () => unsub();
   }, [currentSocietyId]);
 
-  const handleCreateWalkIn = (e: React.FormEvent) => {
+  const scheduleDebouncedRefresh = useCallback((delayMs = 300) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      performAuthoritativeRefresh();
+    }, delayMs);
+  }, [performAuthoritativeRefresh]);
+
+  const refreshData = performAuthoritativeRefresh;
+
+  useEffect(() => {
+    let isMounted = true;
+    performAuthoritativeRefresh();
+
+    const unsub = realtimeService.subscribe('*', (event) => {
+      if (!isMounted) return;
+      const topic = event?.topic || event?.type || '';
+      if (!topic || topic.startsWith('VISITOR_') || topic === '*') {
+        scheduleDebouncedRefresh(300);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      unsub();
+    };
+  }, [currentSocietyId, performAuthoritativeRefresh, scheduleDebouncedRefresh]);
+
+  const handleCreateWalkIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!walkInForm.visitorName || !walkInForm.visitorPhone || !walkInForm.flatCode) return;
 
-    visitorService.createVisitorPass(
-      {
-        societyId: currentSocietyId,
-        residentId: 'res-1',
-        residentName: walkInForm.residentName || 'Resident',
-        flatCode: walkInForm.flatCode,
-        towerName: walkInForm.towerName || 'Tower A',
-        visitorName: walkInForm.visitorName,
-        visitorPhone: walkInForm.visitorPhone,
-        category: walkInForm.category,
-        passLifecycle: 'ONE_TIME',
-        vehicleNumber: walkInForm.vehicleNumber || undefined,
-        photoUrl: walkInForm.photoUrl || undefined,
-        purpose: walkInForm.purpose || 'Gate Walk-in Entry',
-        companyName: walkInForm.companyName || undefined,
-        status: 'CHECKED_IN',
-        gateName: 'Main Gate 1',
-        gateOfficerName: officerActor.name,
-        checkedInAt: `Today, ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-      },
-      officerActor
-    );
+    try {
+      await visitorService.createVisitorPass(
+        {
+          societyId: currentSocietyId,
+          residentId: 'res-1',
+          residentName: walkInForm.residentName || 'Resident',
+          flatCode: walkInForm.flatCode,
+          towerName: walkInForm.towerName || 'Tower A',
+          visitorName: walkInForm.visitorName,
+          visitorPhone: walkInForm.visitorPhone,
+          category: walkInForm.category,
+          passLifecycle: 'ONE_TIME',
+          vehicleNumber: walkInForm.vehicleNumber || undefined,
+          photoUrl: walkInForm.photoUrl || undefined,
+          purpose: walkInForm.purpose || 'Gate Walk-in Entry',
+          companyName: walkInForm.companyName || undefined,
+          status: 'CHECKED_IN',
+          gateName: 'Main Gate 1',
+          gateOfficerName: officerActor.name,
+          checkedInAt: `Today, ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        },
+        officerActor
+      );
 
-    refreshData();
-    setIsWalkInModalOpen(false);
-    setWalkInForm({
-      visitorName: '',
-      visitorPhone: '',
-      flatCode: 'B-1204',
-      residentName: 'Vikram Joshi',
-      towerName: 'Tower B',
-      category: 'GUEST',
-      vehicleNumber: '',
-      purpose: '',
-      companyName: '',
-      photoUrl: '',
-    });
+      await refreshData();
+      setIsWalkInModalOpen(false);
+      setWalkInForm({
+        visitorName: '',
+        visitorPhone: '',
+        flatCode: 'B-1204',
+        residentName: 'Vikram Joshi',
+        towerName: 'Tower B',
+        category: 'GUEST',
+        vehicleNumber: '',
+        purpose: '',
+        companyName: '',
+        photoUrl: '',
+      });
+    } catch (err: any) {
+      alert(err?.message || 'Failed to create walk-in pass');
+    }
   };
 
-  const handleValidateCode = (code: string) => {
+  const handleValidateCode = async (code: string) => {
     if (!code.trim()) return;
-    const res = visitorService.validatePassCode(currentSocietyId, code);
+    const res = await visitorService.validatePassCode(currentSocietyId, code);
     setValidationResult(res);
   };
 
-  const handleCheckIn = (pass: SmartVisitorPass) => {
-    visitorService.checkInVisitor(pass.id, { gateName: 'Main Gate 1', officerName: officerActor.name }, officerActor);
-    refreshData();
-    setValidationResult(null);
-    setIsScannerOpen(false);
+  const handleCheckIn = async (pass: SmartVisitorPass) => {
+    try {
+      await visitorService.checkInVisitor(pass.id, { gateName: 'Main Gate 1', officerName: officerActor.name }, officerActor);
+      await refreshData();
+      setValidationResult(null);
+      setIsScannerOpen(false);
+    } catch (err: any) {
+      alert(err?.message || 'Check-in failed');
+    }
   };
 
-  const handleCheckOut = (passId: string) => {
-    visitorService.checkOutVisitor(passId, officerActor);
-    refreshData();
+  const handleCheckOut = async (passId: string) => {
+    try {
+      await visitorService.checkOutVisitor(passId, officerActor);
+      await refreshData();
+    } catch (err: any) {
+      alert(err?.message || 'Check-out failed');
+    }
   };
 
   const handleToggleLockdown = () => {
@@ -629,19 +678,19 @@ export const SecurityTerminalPage: React.FC = () => {
                 width: 56,
                 height: 56,
                 borderRadius: '50%',
-                background: validationResult.isValid ? '#ECFDF5' : '#FEF2F2',
-                color: validationResult.isValid ? '#059669' : '#DC2626',
+                background: validationResult.isValid ? '#ECFDF5' : validationResult.isOffline ? '#FFFBEB' : '#FEF2F2',
+                color: validationResult.isValid ? '#059669' : validationResult.isOffline ? '#D97706' : '#DC2626',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 marginBottom: '1rem',
               }}
             >
-              {validationResult.isValid ? <CheckCircle2 size={32} /> : <XCircle size={32} />}
+              {validationResult.isValid ? <CheckCircle2 size={32} /> : validationResult.isOffline ? <AlertTriangle size={32} /> : <XCircle size={32} />}
             </div>
 
-            <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1rem', fontWeight: 800, color: validationResult.isValid ? '#065F46' : '#991B1B' }}>
-              {validationResult.isValid ? 'PASS VALIDATED' : 'ENTRY REJECTED'}
+            <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1rem', fontWeight: 800, color: validationResult.isValid ? '#065F46' : validationResult.isOffline ? '#B45309' : '#991B1B' }}>
+              {validationResult.isValid ? 'PASS VALIDATED (ONLINE)' : validationResult.isOffline ? 'OFFLINE CACHED RECORD — ENTRY NOT PERMITTED' : 'ENTRY REJECTED'}
             </h3>
 
             {validationResult.pass && (
@@ -649,11 +698,16 @@ export const SecurityTerminalPage: React.FC = () => {
                 <div style={{ marginBottom: '0.25rem' }}>Visitor: <strong>{validationResult.pass.visitorName}</strong></div>
                 <div style={{ marginBottom: '0.25rem' }}>Destination: <strong>{validationResult.pass.flatCode}</strong> ({validationResult.pass.residentName})</div>
                 <div>Category: {validationResult.pass.category}</div>
+                {validationResult.isOffline && (
+                  <div style={{ marginTop: '0.5rem', color: '#B45309', fontWeight: 700, fontSize: '0.75rem', background: '#FEF3C7', padding: '0.35rem 0.5rem', borderRadius: '6px' }}>
+                    ⚠️ Server verification unavailable. Cached passes cannot authorize gate entry.
+                  </div>
+                )}
               </div>
             )}
 
             {!validationResult.isValid && (
-              <p style={{ color: '#DC2626', fontWeight: 700, fontSize: '0.875rem', margin: '0.5rem 0 1rem 0' }}>
+              <p style={{ color: validationResult.isOffline ? '#B45309' : '#DC2626', fontWeight: 700, fontSize: '0.875rem', margin: '0.5rem 0 1rem 0' }}>
                 {validationResult.reason}
               </p>
             )}
@@ -666,7 +720,7 @@ export const SecurityTerminalPage: React.FC = () => {
               >
                 Dismiss
               </button>
-              {validationResult.isValid && validationResult.pass && (
+              {validationResult.isValid && validationResult.canAuthorizeEntry !== false && validationResult.pass && (
                 <button
                   type="button"
                   onClick={() => handleCheckIn(validationResult.pass!)}

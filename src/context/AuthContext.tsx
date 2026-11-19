@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { 
-  onAuthStateChanged, 
+  onIdTokenChanged, 
   signInWithPhoneNumber, 
   signOut,
   RecaptchaVerifier,
@@ -9,6 +9,17 @@ import type { ConfirmationResult } from 'firebase/auth';
 import { auth, db } from '../services/firebase/config';
 import { doc, getDoc } from 'firebase/firestore';
 import type { UserProfile, UserRole } from '../domains/auth/types';
+import {
+  AUTH_KEYS,
+  getAuthToken,
+  getStoredUser,
+  getAuthProvider,
+  updateAuthToken,
+  isSessionValid,
+  saveAuthSession,
+  clearAuthSession,
+} from '../services/authStorage';
+import { realtimeService } from '../services/realtimeService';
 import { MOCK_USERS } from '../mockData/auth/mockUsers';
 import { isNativeApp } from '../utils/nativeMobile';
 import { App } from '@capacitor/app';
@@ -33,61 +44,83 @@ interface AuthContextProps {
   submitLogin: (appVerifier: RecaptchaVerifier) => Promise<void>;
   verifyOtp: (code: string) => Promise<void>;
   loginAsRole: (role: UserRole) => void;
-  loginWithProfile: (profile: UserProfile) => void;
+  loginWithProfile: (profile: UserProfile, token?: string) => void;
   logout: () => Promise<void>;
   setError: (err: string | null) => void;
 }
 
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
 
-const ONBOARDING_STORAGE_KEY = 'dwellora_onboarding_completed';
-const USER_STORAGE_KEY = 'dwellora_user';
-const ACTIVE_SESSION_KEY = 'dwellora_active_session';
-const LAST_ROUTE_KEY = 'dwellora_last_route';
-const LAST_ROLE_KEY = 'dwellora_last_role';
+const ONBOARDING_STORAGE_KEY = AUTH_KEYS.ONBOARDING_COMPLETED;
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
     try {
-      const isSessionActive = typeof window !== 'undefined' && sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true';
-      if (!isSessionActive) {
-        // Cold Fresh Launch -> Require login for security
-        if (typeof window !== 'undefined') {
-          localStorage.removeItem(USER_STORAGE_KEY);
-          sessionStorage.removeItem(LAST_ROUTE_KEY);
-          sessionStorage.removeItem(LAST_ROLE_KEY);
-        }
+      if (!isSessionValid()) {
+        clearAuthSession();
         return null;
       }
-      const saved = localStorage.getItem(USER_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : null;
+      return getStoredUser();
     } catch {
+      clearAuthSession();
       return null;
     }
   });
 
   const [status, setStatus] = useState<AuthStatus>(() => {
     try {
-      const isSessionActive = typeof window !== 'undefined' && sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true';
-      if (!isSessionActive) {
+      if (!isSessionValid()) {
         return 'UNAUTHENTICATED';
       }
-      const saved = localStorage.getItem(USER_STORAGE_KEY);
-      return saved ? 'AUTHENTICATED' : 'UNAUTHENTICATED';
+      return getStoredUser() ? 'AUTHENTICATED' : 'UNAUTHENTICATED';
     } catch {
       return 'UNAUTHENTICATED';
     }
   });
 
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState<boolean>(() => {
-    return localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true';
+    try {
+      return (
+        localStorage.getItem(AUTH_KEYS.ONBOARDING_COMPLETED) === 'true' ||
+        localStorage.getItem('dwellora_onboarding_completed') === 'true'
+      );
+    } catch {
+      return false;
+    }
   });
   
   const [phoneNumber, setPhoneNumber] = useState('');
   const [countryCode] = useState('+91');
   const [error, setError] = useState<string | null>(null);
+  const [tokenRevision, setTokenRevision] = useState(0);
   
   const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
+
+  // Phase 2: Authenticated Realtime SSE Lifecycle Synchronization
+  useEffect(() => {
+    if (status === 'AUTHENTICATED' && currentUser && isSessionValid()) {
+      const token = getAuthToken();
+      const userId = currentUser.id || (currentUser as any).uid || '';
+      if (token && userId) {
+        realtimeService.connect({
+          token,
+          userId,
+          societyId: currentUser.societyId,
+          role: currentUser.role,
+        });
+        return;
+      }
+    }
+
+    realtimeService.disconnect();
+  }, [status, currentUser?.id, currentUser?.societyId, currentUser?.role, tokenRevision]);
+
+  // Ensure SSE stream is aborted if AuthProvider unmounts
+  useEffect(() => {
+    return () => {
+      realtimeService.disconnect();
+    };
+  }, []);
 
   // App Lifecycle Detection for Native Mobile Background / Foreground Resume
   useEffect(() => {
@@ -97,11 +130,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         listenerPromise = App.addListener('appStateChange', ({ isActive }) => {
           if (isActive) {
             // App resumed from background: Verify active session state
-            const sessionActive = sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true';
-            const savedUser = localStorage.getItem(USER_STORAGE_KEY);
-            if (!sessionActive || !savedUser) {
+            if (!isSessionValid()) {
               // Session expired or killed -> Force login
               logout();
+            } else {
+              realtimeService.handleNetworkResume();
             }
           }
         });
@@ -116,12 +149,75 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // GAP-08: Multi-Tab Invalidation & Synchronization Listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    const handleUnauthorized = () => {
+      realtimeService.disconnect();
+      clearAuthSession();
+      setCurrentUser(null);
+      setStatus('UNAUTHENTICATED');
+    };
+
+    const handleStorageChange = (event: StorageEvent) => {
+      // Only handle events targeting localStorage
+      if (event.storageArea && event.storageArea !== localStorage) return;
+
+      // When another tab logs out, clears tokens, refreshes token, or wipes storage
+      if (event.key === AUTH_KEYS.TOKEN || event.key === null) {
+        if (!event.newValue) {
+          realtimeService.disconnect();
+          clearAuthSession();
+          setCurrentUser(null);
+          setStatus('UNAUTHENTICATED');
+        } else if (event.key === AUTH_KEYS.TOKEN) {
+          setTokenRevision((rev) => rev + 1);
+        }
+      } else if (event.key === AUTH_KEYS.USER) {
+        if (!event.newValue) {
+          realtimeService.disconnect();
+          clearAuthSession();
+          setCurrentUser(null);
+          setStatus('UNAUTHENTICATED');
+        } else {
+          try {
+            const updatedProfile = JSON.parse(event.newValue) as UserProfile;
+            if (updatedProfile && updatedProfile.id) {
+              setCurrentUser(updatedProfile);
+            }
+          } catch {}
+        }
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('aarizo:unauthorized', handleUnauthorized);
+      window.addEventListener('storage', handleStorageChange);
+      return () => {
+        window.removeEventListener('aarizo:unauthorized', handleUnauthorized);
+        window.removeEventListener('storage', handleStorageChange);
+      };
+    }
+  }, []);
+
+  // GAP-07: Firebase ID Token Lifecycle & Refresh Synchronization
+  useEffect(() => {
+    let authStateSequence = 0;
+
+    const unsubscribe = onIdTokenChanged(auth, async (firebaseUser) => {
+      const currentSeq = ++authStateSequence;
+
       if (!firebaseUser) {
-        const isSessionActive = sessionStorage.getItem(ACTIVE_SESSION_KEY) === 'true';
-        const storedUser = localStorage.getItem(USER_STORAGE_KEY);
-        if (!isSessionActive || !storedUser) {
+        // Firebase user signed out or absent — disconnect SSE synchronously BEFORE clearing session
+        const currentProvider = getAuthProvider();
+        if (currentProvider === 'firebase') {
+          realtimeService.disconnect();
+          clearAuthSession();
+          setCurrentUser(null);
+          setStatus('UNAUTHENTICATED');
+        } else if (!isSessionValid()) {
+          // If session is invalid and not a valid password/mock session, clean up
+          realtimeService.disconnect();
+          clearAuthSession();
           setCurrentUser(null);
           setStatus('UNAUTHENTICATED');
         }
@@ -129,20 +225,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       try {
+        const storedUser = getStoredUser();
+        const isCurrentFirebaseUser =
+          storedUser &&
+          (storedUser.id === firebaseUser.uid || (storedUser as any).uid === firebaseUser.uid) &&
+          getAuthProvider() === 'firebase' &&
+          isSessionValid();
+
+        if (isCurrentFirebaseUser) {
+          // Silent token refresh for existing authenticated Firebase session
+          const refreshedToken = await firebaseUser.getIdToken();
+          if (currentSeq !== authStateSequence) return;
+
+          updateAuthToken(refreshedToken, 'firebase');
+          setTokenRevision((rev) => rev + 1);
+          return;
+        }
+
+        // Full initial login or user change: verify claims & profile
         const idTokenResult = await firebaseUser.getIdTokenResult(true);
+        if (currentSeq !== authStateSequence) return;
+
         const claimsRole = (idTokenResult.claims.role as string | undefined)?.toLowerCase() as UserRole | undefined;
         const claimsSocietyId = idTokenResult.claims.societyId as string | undefined;
 
         if (!claimsRole || !claimsSocietyId) {
           console.error("Missing Custom Claims:", idTokenResult.claims);
+          realtimeService.disconnect();
           setStatus('CLAIMS_MISSING');
           return;
         }
 
         const docRef = doc(db, 'users', firebaseUser.uid);
         const docSnap = await getDoc(docRef);
+        if (currentSeq !== authStateSequence) return;
 
         if (!docSnap.exists()) {
+          realtimeService.disconnect();
           setStatus('PROFILE_MISSING');
           return;
         }
@@ -173,17 +292,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             claims: { role: claimsRole, societyId: claimsSocietyId }, 
             profile: { role: profile.role, societyId: profile.societyId } 
           });
+          realtimeService.disconnect();
           setStatus('CLAIMS_MISMATCH');
           return;
         }
 
-        sessionStorage.setItem(ACTIVE_SESSION_KEY, 'true');
-        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(profile));
+        let idToken: string | undefined = undefined;
+        try {
+          idToken = await firebaseUser.getIdToken();
+        } catch (tokenErr) {
+          console.warn("Failed to get Firebase ID token:", tokenErr);
+        }
+
+        if (currentSeq !== authStateSequence) return;
+
+        saveAuthSession(profile, idToken, 'firebase');
         setCurrentUser(profile);
         setStatus('AUTHENTICATED');
+        setTokenRevision((rev) => rev + 1);
 
       } catch (err) {
+        if (currentSeq !== authStateSequence) return;
         console.error("Auth initialization error:", err);
+        realtimeService.disconnect();
         setError("Failed to verify user identity.");
         setStatus('UNAUTHENTICATED');
       }
@@ -217,7 +348,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       setError(null);
       await confirmationResult.confirm(code);
-      sessionStorage.setItem(ACTIVE_SESSION_KEY, 'true');
+      sessionStorage.setItem(AUTH_KEYS.SESSION_ACTIVE, 'true');
     } catch (err: any) {
       setError(err.message || "Invalid OTP code.");
       throw err;
@@ -226,41 +357,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginAsRole = (role: UserRole) => {
     const user = MOCK_USERS[role] || MOCK_USERS.resident;
-    try {
-      sessionStorage.setItem(ACTIVE_SESSION_KEY, 'true');
-      sessionStorage.setItem(LAST_ROLE_KEY, role.toLowerCase());
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
-    } catch (e) {
-      console.warn("Failed to persist active session:", e);
-    }
+    const mockToken = import.meta.env.DEV ? `mock_token_${user.id}` : undefined;
+    saveAuthSession(user, mockToken, 'mock');
+    sessionStorage.setItem(AUTH_KEYS.LAST_ROLE, role.toLowerCase());
     setCurrentUser(user);
     setStatus('AUTHENTICATED');
+    setTokenRevision((rev) => rev + 1);
   };
 
-  const loginWithProfile = (profile: UserProfile) => {
-    try {
-      sessionStorage.setItem(ACTIVE_SESSION_KEY, 'true');
-      sessionStorage.setItem(LAST_ROLE_KEY, profile.role.toLowerCase());
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(profile));
-    } catch (e) {
-      console.warn("Failed to persist active session:", e);
-    }
+  const loginWithProfile = (profile: UserProfile, token?: string) => {
+    saveAuthSession(profile, token, 'password');
+    sessionStorage.setItem(AUTH_KEYS.LAST_ROLE, profile.role.toLowerCase());
     setCurrentUser(profile);
     setStatus('AUTHENTICATED');
+    setTokenRevision((rev) => rev + 1);
   };
 
   const logout = async () => {
+    realtimeService.disconnect();
     try {
       await signOut(auth);
     } catch (e) {
       console.warn("Firebase signout error:", e);
     }
-    try {
-      sessionStorage.removeItem(ACTIVE_SESSION_KEY);
-      sessionStorage.removeItem(LAST_ROUTE_KEY);
-      sessionStorage.removeItem(LAST_ROLE_KEY);
-      localStorage.removeItem(USER_STORAGE_KEY);
-    } catch (e) {}
+    clearAuthSession();
     setCurrentUser(null);
     setStatus('UNAUTHENTICATED');
   };

@@ -33,7 +33,7 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
       }
 
       // 2. Query visitorService for canonical validation & fallback
-      const localResult = visitorService.validatePassCode('soc-gvs', code);
+      const localResult = await visitorService.validatePassCode('soc-gvs', code);
       const matchedVisitor = visitors.find(
         (v) => v.passcode.toUpperCase() === code.toUpperCase() || v.id.toUpperCase().endsWith(code.toUpperCase())
       );
@@ -66,9 +66,9 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
           passcode: code,
           verificationStatus: 'valid',
           visitor: mappedGuardVisitor,
-          message: 'Gate pass verified successfully!',
+          message: 'Gate pass verified successfully via authoritative server!',
         });
-      } else if (localResult.isValid && localResult.pass) {
+      } else if (localResult.isAuthoritative && localResult.isValid && localResult.pass) {
         const pass = localResult.pass;
         const mappedGuardVisitor: GuardVisitor = matchedVisitor || {
           id: pass.id,
@@ -96,7 +96,40 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
           passcode: code,
           verificationStatus: 'valid',
           visitor: mappedGuardVisitor,
-          message: 'Gate pass verified successfully!',
+          message: 'Gate pass verified successfully via authoritative server!',
+        });
+      } else if (localResult.isOffline && localResult.pass) {
+        // Safe offline gate verification: Cached passes must NEVER authorize entry or be presented as valid
+        const pass = localResult.pass;
+        const isExpired = pass.status === 'EXPIRED' || new Date() > new Date(pass.validUntil);
+        const isCancelled = (pass.status as any) === 'REVOKED' || (pass.status as any) === 'CANCELLED';
+
+        const mappedGuardVisitor: GuardVisitor = matchedVisitor || {
+          id: pass.id,
+          passcode: pass.passCode || code,
+          name: pass.visitorName,
+          phone: pass.visitorPhone,
+          visitorType: (pass.category.toLowerCase() || 'guest') as any,
+          visitorTypeLabel: `${pass.category} Visitor (Offline Reference)`,
+          residentName: pass.residentName || 'Vikram Joshi',
+          flatCode: pass.flatCode || 'Flat B-1204',
+          tower: pass.towerName || 'Tower B',
+          societyName: 'Green Valley Society',
+          expectedDate: 'Today',
+          expectedTimeSlot: isExpired ? 'Expired' : 'Unconfirmed',
+          status: isExpired ? 'expired' : isCancelled ? 'cancelled' : 'expected',
+          verificationStatus: isExpired ? 'expired' : isCancelled ? 'cancelled' : 'offline_unverified',
+          createdAt: new Date(pass.createdAt || Date.now()).toLocaleDateString(),
+          gateName: 'Gate #1 Main Entrance',
+          gateOfficer: 'Officer Ramesh Shinde',
+          notes: pass.purpose || 'Visit',
+        };
+
+        setVerificationResult({
+          passcode: code,
+          verificationStatus: isExpired ? 'expired' : isCancelled ? 'cancelled' : 'offline_unverified',
+          visitor: mappedGuardVisitor,
+          message: localResult.reason || 'OFFLINE CACHED RECORD — Authoritative server verification is unavailable. Gate entry CANNOT be authorized.',
         });
       } else if (localResult.pass && !localResult.isValid) {
         const pass = localResult.pass;
@@ -127,18 +160,11 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
           visitor: mappedGuardVisitor,
           message: localResult.reason || 'Gate pass is invalid or expired.',
         });
-      } else if (matchedVisitor) {
-        setVerificationResult({
-          passcode: code,
-          verificationStatus: matchedVisitor.verificationStatus || 'valid',
-          visitor: matchedVisitor,
-          message: 'Gate pass verified successfully!',
-        });
       } else {
         setVerificationResult({
           passcode: code,
           verificationStatus: 'invalid',
-          message: `Passcode ${code} not recognised in system. Please verify the 4-digit code and try again.`,
+          message: `Passcode ${code} not recognised in system. Please verify the code and try again.`,
         });
       }
     } catch (err) {
@@ -385,12 +411,16 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
             background:
               verificationResult.verificationStatus === 'valid'
                 ? '#ECFDF5'
+                : verificationResult.verificationStatus === 'offline_unverified'
+                ? '#FFFBEB'
                 : verificationResult.verificationStatus === 'expired' || verificationResult.verificationStatus === 'cancelled'
                 ? '#FFFBEB'
                 : '#FEF2F2',
             border: `1.5px solid ${
               verificationResult.verificationStatus === 'valid'
                 ? '#6EE7B7'
+                : verificationResult.verificationStatus === 'offline_unverified'
+                ? '#F59E0B'
                 : verificationResult.verificationStatus === 'expired' || verificationResult.verificationStatus === 'cancelled'
                 ? '#FDE68A'
                 : '#FECACA'
@@ -411,6 +441,8 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
                 background:
                   verificationResult.verificationStatus === 'valid'
                     ? '#059669'
+                    : verificationResult.verificationStatus === 'offline_unverified'
+                    ? '#D97706'
                     : verificationResult.verificationStatus === 'expired' || verificationResult.verificationStatus === 'cancelled'
                     ? '#D97706'
                     : '#DC2626',
@@ -439,6 +471,8 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
                   color:
                     verificationResult.verificationStatus === 'valid'
                       ? '#065F46'
+                      : verificationResult.verificationStatus === 'offline_unverified'
+                      ? '#B45309'
                       : verificationResult.verificationStatus === 'expired' || verificationResult.verificationStatus === 'cancelled'
                       ? '#92400E'
                       : '#991B1B',
@@ -447,6 +481,8 @@ export const PassVerification: React.FC<PassVerificationProps> = ({ visitors, on
               >
                 {verificationResult.verificationStatus === 'valid'
                   ? '✓ PASS VERIFIED — ENTRY ALLOWED'
+                  : verificationResult.verificationStatus === 'offline_unverified'
+                  ? '⚠️ OFFLINE CACHE ONLY — ENTRY NOT AUTHORIZED'
                   : verificationResult.verificationStatus === 'expired'
                   ? '⏰ GATE PASS EXPIRED'
                   : verificationResult.verificationStatus === 'cancelled'

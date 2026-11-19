@@ -1,0 +1,17 @@
+version: '3.8'
+
+# ==============================================================================
+# AARIZO CommunityOS — Local Development Docker Compose Override
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# ==============================================================================
+
+services:
+  postgres:
+    environment:
+      # Explicit local development authorization required by 03_seed.sql fail-closed PL/pgSQL guard
+      PGOPTIONS: "-c aarizo.environment=development"
+    volumes:
+      # Explicit opt-in mount for local development demo personas and sample records
+      - ./scripts/postgres/03_seed.sql:/docker-entrypoint-initdb.d/03_seed.sql
+

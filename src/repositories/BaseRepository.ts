@@ -1,4 +1,5 @@
 import { realtimeService } from '../services/realtimeService';
+import { authenticatedFetch, getStoredUser } from '../services/authStorage';
 
 export interface BaseEntity {
   id: string;
@@ -20,10 +21,9 @@ export abstract class BaseRepository<T extends BaseEntity> {
 
   protected getCurrentUserId(): string | null {
     try {
-      const rawUser = localStorage.getItem('aarizo_user') || localStorage.getItem('communityos_auth_user');
-      if (rawUser) {
-        const parsed = JSON.parse(rawUser);
-        return parsed.id || parsed.uid || null;
+      const user = getStoredUser();
+      if (user) {
+        return user.id || (user as any).uid || null;
       }
     } catch {}
     return null;
@@ -39,7 +39,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
     };
 
     // 100% PostgreSQL via Prisma backend
-    const res = await fetch(`/api/collections/${this.collectionName}`, {
+    const res = await authenticatedFetch(`/api/collections/${this.collectionName}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -59,7 +59,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
   public async getById(id: string): Promise<T | null> {
     // 100% PostgreSQL via Prisma backend
     try {
-      const res = await fetch(`/api/collections/${this.collectionName}/${id}`);
+      const res = await authenticatedFetch(`/api/collections/${this.collectionName}/${id}`);
       if (res.ok) {
         const json = await res.json();
         if (json && json.id) return json as T;
@@ -78,7 +78,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
     };
 
     // 100% PostgreSQL via Prisma backend
-    const res = await fetch(`/api/collections/${this.collectionName}/${id}`, {
+    const res = await authenticatedFetch(`/api/collections/${this.collectionName}/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -91,7 +91,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
 
   public async delete(id: string): Promise<void> {
     // 100% PostgreSQL via Prisma backend
-    const res = await fetch(`/api/collections/${this.collectionName}/${id}`, {
+    const res = await authenticatedFetch(`/api/collections/${this.collectionName}/${id}`, {
       method: 'DELETE',
     });
 
@@ -115,7 +115,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
     };
 
     // 100% PostgreSQL via Prisma backend
-    const res = await fetch(`/api/collections/${this.collectionName}/${id}`, {
+    const res = await authenticatedFetch(`/api/collections/${this.collectionName}/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -129,7 +129,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
   public async listAll(_constraints: any[] = []): Promise<T[]> {
     // 100% PostgreSQL via Prisma backend
     try {
-      const res = await fetch(`/api/collections/${this.collectionName}`);
+      const res = await authenticatedFetch(`/api/collections/${this.collectionName}`);
       if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const rows = await res.json();
         if (Array.isArray(rows)) return rows as T[];
@@ -162,7 +162,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
   public async list(societyId: string, _constraints: any[] = []): Promise<T[]> {
     // 100% PostgreSQL via Prisma backend
     try {
-      const res = await fetch(`/api/collections/${this.collectionName}?societyId=${encodeURIComponent(societyId)}`, {
+      const res = await authenticatedFetch(`/api/collections/${this.collectionName}?societyId=${encodeURIComponent(societyId)}`, {
         headers: { 'x-society-id': societyId },
       });
       if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
