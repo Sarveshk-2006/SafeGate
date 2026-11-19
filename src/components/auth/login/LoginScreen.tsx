@@ -14,10 +14,23 @@ import {
   KeyRound,
   ChevronDown,
   Sparkles,
+  CheckCircle2,
+  Home,
+  Building2,
+  ShieldCheck,
+  Users,
+  Wrench,
+  Truck,
+  Zap,
 } from 'lucide-react';
-import { MOCK_USERS } from '../../../mockData/auth/mockUsers';
 import { apiClient } from '../../../services/apiClient';
 import type { UserRole, UserProfile } from '../../../domains/auth/types';
+import {
+  DEMO_ACCOUNTS,
+  findDemoAccount,
+  DEMO_PASSWORD,
+  type DemoAccount,
+} from '../../../mockData/auth/demoAccounts';
 import '../auth.css';
 
 export const LoginScreen: React.FC = () => {
@@ -28,13 +41,8 @@ export const LoginScreen: React.FC = () => {
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
-
-  // Development Only: Test Persona Quick-Fill Collapsible (strictly hidden in production)
-  const isDevEnvironment = Boolean(
-    typeof (globalThis as any).process !== 'undefined' &&
-    (globalThis as any).process?.env?.NODE_ENV === 'development'
-  );
-  const [showDevPersonas, setShowDevPersonas] = useState<boolean>(false);
+  const [showDemoAccounts, setShowDemoAccounts] = useState<boolean>(false);
+  const [demoSelectedNotice, setDemoSelectedNotice] = useState<string | null>(null);
 
   // Prevent back navigation on Android when on Login screen -> Exit App safely
   useEffect(() => {
@@ -46,6 +54,16 @@ export const LoginScreen: React.FC = () => {
       return () => handleBack();
     }
   }, []);
+
+  const routeByRole = (role: UserRole) => {
+    if (role === 'secretary') return '/admin';
+    if (role === 'guard') return '/security';
+    if (role === 'committee') return '/committee';
+    if (role === 'facility_manager') return '/facility';
+    if (role === 'vendor') return '/vendor';
+    if (role === 'admin') return '/super-admin';
+    return '/resident';
+  };
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,6 +81,7 @@ export const LoginScreen: React.FC = () => {
 
     setLoading(true);
     setError(null);
+    setDemoSelectedNotice(null);
 
     try {
       const res = await apiClient.loginWithPassword({
@@ -88,32 +107,67 @@ export const LoginScreen: React.FC = () => {
 
         loginWithProfile(userProfile, res.token);
         setLoading(false);
+        navigate(routeByRole(userRole), { replace: true });
+        return;
+      }
 
-        if (userRole === 'secretary') navigate('/admin', { replace: true });
-        else if (userRole === 'guard') navigate('/security', { replace: true });
-        else if (userRole === 'committee') navigate('/committee', { replace: true });
-        else if (userRole === 'facility_manager') navigate('/facility', { replace: true });
-        else if (userRole === 'vendor') navigate('/vendor', { replace: true });
-        else if (userRole === 'admin') navigate('/super-admin', { replace: true });
-        else navigate('/resident', { replace: true });
+      // Offline / standalone demo credentials fallback
+      const demoAccount = findDemoAccount(normalizedEmail, password.trim());
+      if (demoAccount) {
+        loginWithProfile(demoAccount.profile, 'dwellora-demo-session-token');
+        setLoading(false);
+        navigate(demoAccount.route, { replace: true });
         return;
       }
 
       setError('Invalid email or password. Please verify your credentials.');
       setLoading(false);
     } catch (err: any) {
+      // If network fails (e.g. mobile APK offline or unreachable backend), check demo credentials
+      const demoAccount = findDemoAccount(normalizedEmail, password.trim());
+      if (demoAccount) {
+        loginWithProfile(demoAccount.profile, 'dwellora-demo-session-token');
+        setLoading(false);
+        navigate(demoAccount.route, { replace: true });
+        return;
+      }
+
       setError(err?.message || 'Invalid email or password. Please verify credentials.');
       setLoading(false);
     }
   };
 
-  // Development quick-fill helper for test personas
-  const handleQuickFill = (role: UserRole) => {
-    const mockUser = MOCK_USERS[role];
-    if (mockUser && mockUser.email) {
-      setEmail(mockUser.email);
-      setPassword('dwellora@2026');
-      setError(null);
+  // 1-Tap Auto-fill for any demo persona
+  const handleFillDemo = (account: DemoAccount) => {
+    setEmail(account.primaryEmail);
+    setPassword(account.password);
+    setError(null);
+    setDemoSelectedNotice(`Filled credentials for ${account.badge} (${account.name}).`);
+  };
+
+  // Instant direct login for testing
+  const handleDirectDemoLogin = (account: DemoAccount) => {
+    setLoading(true);
+    loginWithProfile(account.profile, 'dwellora-demo-session-token');
+    navigate(account.route, { replace: true });
+  };
+
+  const getRoleIcon = (role: UserRole) => {
+    switch (role) {
+      case 'resident':
+        return <Home size={15} color="#083B56" />;
+      case 'secretary':
+        return <Building2 size={15} color="#083B56" />;
+      case 'guard':
+        return <ShieldCheck size={15} color="#083B56" />;
+      case 'committee':
+        return <Users size={15} color="#083B56" />;
+      case 'facility_manager':
+        return <Wrench size={15} color="#083B56" />;
+      case 'vendor':
+        return <Truck size={15} color="#083B56" />;
+      case 'admin':
+        return <Zap size={15} color="#083B56" />;
     }
   };
 
@@ -232,6 +286,30 @@ export const LoginScreen: React.FC = () => {
           </div>
         )}
 
+        {/* ── Demo Selection Info Banner ── */}
+        {demoSelectedNotice && (
+          <div
+            style={{
+              width: '100%',
+              background: '#F0FDF4',
+              border: '1px solid #BBF7D0',
+              color: '#166534',
+              padding: '0.65rem 0.85rem',
+              borderRadius: '12px',
+              fontSize: '0.8125rem',
+              fontWeight: 600,
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              boxSizing: 'border-box',
+            }}
+          >
+            <CheckCircle2 size={16} color="#16A34A" style={{ flexShrink: 0 }} />
+            <span>{demoSelectedNotice}</span>
+          </div>
+        )}
+
         {/* ── Production Login Form ── */}
         <form
           onSubmit={handleFormSubmit}
@@ -288,6 +366,7 @@ export const LoginScreen: React.FC = () => {
                 onChange={(e) => {
                   setEmail(e.target.value);
                   setError(null);
+                  setDemoSelectedNotice(null);
                 }}
                 style={{
                   flex: 1,
@@ -364,6 +443,7 @@ export const LoginScreen: React.FC = () => {
                 onChange={(e) => {
                   setPassword(e.target.value);
                   setError(null);
+                  setDemoSelectedNotice(null);
                 }}
                 style={{
                   flex: 1,
@@ -469,8 +549,186 @@ export const LoginScreen: React.FC = () => {
           </div>
         </form>
 
+        {/* ── Demo Accounts Drawer (Direct Role Testing) ── */}
+        <div
+          style={{
+            width: '100%',
+            marginTop: '1rem',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setShowDemoAccounts(!showDemoAccounts)}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0.75rem 1rem',
+              background: '#ffffff',
+              border: '1px solid #CBD5E1',
+              borderRadius: '14px',
+              color: '#083B56',
+              fontSize: '0.8125rem',
+              fontWeight: 800,
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(8, 59, 86, 0.04)',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Sparkles size={16} color="#F06543" />
+              <span>Demo Role Accounts (Tap to test)</span>
+            </div>
+            <ChevronDown
+              size={16}
+              color="#657785"
+              style={{
+                transform: showDemoAccounts ? 'rotate(180deg)' : 'none',
+                transition: 'transform 0.2s ease',
+              }}
+            />
+          </button>
+
+          {showDemoAccounts && (
+            <div
+              style={{
+                marginTop: '0.625rem',
+                background: '#ffffff',
+                border: '1px solid #E2E8F0',
+                borderRadius: '16px',
+                padding: '0.875rem',
+                boxShadow: '0 8px 24px rgba(8, 59, 86, 0.06)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.5rem',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  paddingBottom: '0.5rem',
+                  borderBottom: '1px solid #F1F5F9',
+                }}
+              >
+                <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#083B56' }}>
+                  Select a Role to Auto-Fill
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.6875rem',
+                    fontWeight: 700,
+                    color: '#657785',
+                    background: '#F1F5F9',
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '6px',
+                  }}
+                >
+                  Password: {DEMO_PASSWORD}
+                </span>
+              </div>
+
+              {DEMO_ACCOUNTS.map((acc) => (
+                <div
+                  key={acc.role}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '0.625rem 0.75rem',
+                    background: '#F8FAFC',
+                    border: '1px solid #E2E8F0',
+                    borderRadius: '12px',
+                    gap: '0.5rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+                    <div
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: '8px',
+                        background: '#EEF2F6',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {getRoleIcon(acc.role)}
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: '0.78125rem',
+                          fontWeight: 800,
+                          color: '#083B56',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {acc.badge}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: '0.6875rem',
+                          color: '#657785',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {acc.primaryEmail}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.35rem', flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleFillDemo(acc)}
+                      style={{
+                        background: '#ffffff',
+                        border: '1px solid #CBD5E1',
+                        color: '#083B56',
+                        padding: '0.3rem 0.6rem',
+                        borderRadius: '8px',
+                        fontSize: '0.6875rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Fill
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDirectDemoLogin(acc)}
+                      style={{
+                        background: '#083B56',
+                        border: 'none',
+                        color: '#ffffff',
+                        padding: '0.3rem 0.6rem',
+                        borderRadius: '8px',
+                        fontSize: '0.6875rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Log In
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Welcome / Onboarding Link */}
-        <div style={{ textAlign: 'center', marginTop: '1.25rem' }}>
+        <div style={{ textAlign: 'center', marginTop: '1.25rem', marginBottom: '1.5rem' }}>
           <Link
             to="/"
             style={{
@@ -483,85 +741,6 @@ export const LoginScreen: React.FC = () => {
             ← Back to Welcome Carousel
           </Link>
         </div>
-
-        {/* ── Developer Personas Collapsible (Strictly DEV Only) ── */}
-        {isDevEnvironment && (
-          <div
-            style={{
-              width: '100%',
-              marginTop: '2rem',
-              borderTop: '1px dashed #CBD5E1',
-              paddingTop: '1rem',
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setShowDevPersonas(!showDevPersonas)}
-              style={{
-                background: 'none',
-                border: 'none',
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '0.5rem',
-                color: '#94A3B8',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Sparkles size={13} />
-                <span>DEV: Quick-Fill Test Credentials</span>
-              </div>
-              <ChevronDown
-                size={14}
-                style={{
-                  transform: showDevPersonas ? 'rotate(180deg)' : 'none',
-                  transition: 'transform 0.2s ease',
-                }}
-              />
-            </button>
-
-            {showDevPersonas && (
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(3, 1fr)',
-                  gap: '0.4rem',
-                  marginTop: '0.5rem',
-                  background: '#F8FAFC',
-                  padding: '0.75rem',
-                  borderRadius: '12px',
-                  border: '1px solid #E2E8F0',
-                }}
-              >
-                {(['resident', 'secretary', 'guard', 'committee', 'facility_manager', 'vendor', 'admin'] as UserRole[]).map((role) => (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => handleQuickFill(role)}
-                    style={{
-                      background: '#ffffff',
-                      border: '1px solid #CBD5E1',
-                      borderRadius: '8px',
-                      padding: '0.35rem',
-                      fontSize: '0.6875rem',
-                      fontWeight: 700,
-                      color: '#083B56',
-                      cursor: 'pointer',
-                      textAlign: 'center',
-                      textTransform: 'capitalize',
-                    }}
-                  >
-                    {role.replace('_', ' ')}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );

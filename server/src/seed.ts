@@ -671,6 +671,225 @@ async function seed() {
     },
   });
 
+  // 5b. Canonical Demo Role Users (@dwellora.com)
+  console.log('🌟 Seeding Canonical Demo Accounts for Multi-Portal Testing (@dwellora.com)...');
+
+  const credDemoResident = await resolveSeedCredentials('user-demo-resident', 'resident');
+  const userDemoResident = await prisma.user.upsert({
+    where: { id: 'user-demo-resident' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatB1204.id,
+      name: 'Sarvesh Kulkarni',
+      email: 'resident@dwellora.com',
+      phone: '9876543210',
+      role: 'resident',
+      flatNumber: 'B-1204',
+      flatDetails: 'Tower B · Flat 1204',
+      status: 'ACTIVE',
+      passwordHash: credDemoResident.passwordHash,
+      salt: credDemoResident.salt,
+    },
+    create: {
+      id: 'user-demo-resident',
+      societyId: socGVS.id,
+      flatId: flatB1204.id,
+      name: 'Sarvesh Kulkarni',
+      email: 'resident@dwellora.com',
+      phone: '9876543210',
+      role: 'resident',
+      flatNumber: 'B-1204',
+      flatDetails: 'Tower B · Flat 1204',
+      status: 'ACTIVE',
+      passwordHash: credDemoResident.passwordHash,
+      salt: credDemoResident.salt,
+    },
+  });
+
+  const credDemoSecretary = await resolveSeedCredentials('user-demo-secretary', 'secretary');
+  const userDemoSecretary = await prisma.user.upsert({
+    where: { id: 'user-demo-secretary' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatC301.id,
+      name: 'Mayuri Udar',
+      email: 'secretary@dwellora.com',
+      phone: '9820012345',
+      role: 'secretary',
+      flatNumber: 'A-101',
+      flatDetails: 'Block A · Flat 101',
+      designation: 'Society Secretary',
+      status: 'ACTIVE',
+      passwordHash: credDemoSecretary.passwordHash,
+      salt: credDemoSecretary.salt,
+    },
+    create: {
+      id: 'user-demo-secretary',
+      societyId: socGVS.id,
+      flatId: flatC301.id,
+      name: 'Mayuri Udar',
+      email: 'secretary@dwellora.com',
+      phone: '9820012345',
+      role: 'secretary',
+      flatNumber: 'A-101',
+      flatDetails: 'Block A · Flat 101',
+      designation: 'Society Secretary',
+      status: 'ACTIVE',
+      passwordHash: credDemoSecretary.passwordHash,
+      salt: credDemoSecretary.salt,
+    },
+  });
+
+  const credDemoGuard = await resolveSeedCredentials('user-demo-guard', 'guard');
+  const userDemoGuard = await prisma.user.upsert({
+    where: { id: 'user-demo-guard' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Officer R. Singh',
+      email: 'guard@dwellora.com',
+      phone: '9123456789',
+      role: 'guard',
+      flatDetails: 'Main Gate #1 Terminal',
+      designation: 'Chief Security Officer',
+      status: 'ACTIVE',
+      passwordHash: credDemoGuard.passwordHash,
+      salt: credDemoGuard.salt,
+    },
+    create: {
+      id: 'user-demo-guard',
+      societyId: socGVS.id,
+      name: 'Officer R. Singh',
+      email: 'guard@dwellora.com',
+      phone: '9123456789',
+      role: 'guard',
+      flatDetails: 'Main Gate #1 Terminal',
+      designation: 'Chief Security Officer',
+      status: 'ACTIVE',
+      passwordHash: credDemoGuard.passwordHash,
+      salt: credDemoGuard.salt,
+    },
+  });
+
+  const credDemoCommittee = await resolveSeedCredentials('user-demo-committee', 'committee');
+  const userDemoCommittee = await prisma.user.upsert({
+    where: { id: 'user-demo-committee' },
+    update: {
+      societyId: socGVS.id,
+      flatId: flatB402.id,
+      name: 'Rajesh Mehta',
+      email: 'committee@dwellora.com',
+      phone: '9900112233',
+      role: 'committee',
+      flatNumber: 'A-201',
+      flatDetails: 'Tower A · Flat 201',
+      designation: 'Management Committee Member',
+      status: 'ACTIVE',
+      passwordHash: credDemoCommittee.passwordHash,
+      salt: credDemoCommittee.salt,
+    },
+    create: {
+      id: 'user-demo-committee',
+      societyId: socGVS.id,
+      flatId: flatB402.id,
+      name: 'Rajesh Mehta',
+      email: 'committee@dwellora.com',
+      phone: '9900112233',
+      role: 'committee',
+      flatNumber: 'A-201',
+      flatDetails: 'Tower A · Flat 201',
+      designation: 'Management Committee Member',
+      status: 'ACTIVE',
+      passwordHash: credDemoCommittee.passwordHash,
+      salt: credDemoCommittee.salt,
+    },
+  });
+
+  const credDemoFacility = await resolveSeedCredentials('user-demo-facility', 'facility_manager');
+  const userDemoFacility = await prisma.user.upsert({
+    where: { id: 'user-demo-facility' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Suresh Patil',
+      email: 'facility@dwellora.com',
+      phone: '9811223344',
+      role: 'facility_manager',
+      flatDetails: 'Office Block',
+      designation: 'Facility Manager',
+      status: 'ACTIVE',
+      passwordHash: credDemoFacility.passwordHash,
+      salt: credDemoFacility.salt,
+    },
+    create: {
+      id: 'user-demo-facility',
+      societyId: socGVS.id,
+      name: 'Suresh Patil',
+      email: 'facility@dwellora.com',
+      phone: '9811223344',
+      role: 'facility_manager',
+      flatDetails: 'Office Block',
+      designation: 'Facility Manager',
+      status: 'ACTIVE',
+      passwordHash: credDemoFacility.passwordHash,
+      salt: credDemoFacility.salt,
+    },
+  });
+
+  const credDemoVendor = await resolveSeedCredentials('user-demo-vendor', 'vendor');
+  const userDemoVendor = await prisma.user.upsert({
+    where: { id: 'user-demo-vendor' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Priya Cleaning Services',
+      email: 'vendor@dwellora.com',
+      phone: '9844556677',
+      role: 'vendor',
+      designation: 'Registered Vendor',
+      status: 'ACTIVE',
+      passwordHash: credDemoVendor.passwordHash,
+      salt: credDemoVendor.salt,
+    },
+    create: {
+      id: 'user-demo-vendor',
+      societyId: socGVS.id,
+      name: 'Priya Cleaning Services',
+      email: 'vendor@dwellora.com',
+      phone: '9844556677',
+      role: 'vendor',
+      designation: 'Registered Vendor',
+      status: 'ACTIVE',
+      passwordHash: credDemoVendor.passwordHash,
+      salt: credDemoVendor.salt,
+    },
+  });
+
+  const credDemoAdmin = await resolveSeedCredentials('user-demo-admin', 'admin');
+  const userDemoAdmin = await prisma.user.upsert({
+    where: { id: 'user-demo-admin' },
+    update: {
+      societyId: socGVS.id,
+      name: 'Platform Admin',
+      email: 'admin@dwellora.com',
+      phone: '9000000001',
+      role: 'admin',
+      designation: 'Platform Administrator',
+      status: 'ACTIVE',
+      passwordHash: credDemoAdmin.passwordHash,
+      salt: credDemoAdmin.salt,
+    },
+    create: {
+      id: 'user-demo-admin',
+      societyId: socGVS.id,
+      name: 'Platform Admin',
+      email: 'admin@dwellora.com',
+      phone: '9000000001',
+      role: 'admin',
+      designation: 'Platform Administrator',
+      status: 'ACTIVE',
+      passwordHash: credDemoAdmin.passwordHash,
+      salt: credDemoAdmin.salt,
+    },
+  });
+
   // 6. Residents
   console.log('👥 Seeding Resident Records...');
   const resVikram = await prisma.resident.upsert({
@@ -701,6 +920,39 @@ async function seed() {
       moveInDate: new Date('2023-06-01'),
       emergencyContactName: 'Pooja Joshi',
       emergencyContactPhone: '9820098205',
+      isVerified: true,
+      status: 'ACTIVE',
+    },
+  });
+
+  const resDemoResident = await prisma.resident.upsert({
+    where: { id: 'res-demo-resident' },
+    update: {
+      societyId: socGVS.id,
+      userId: userDemoResident.id,
+      flatId: flatB1204.id,
+      name: 'Sarvesh Kulkarni',
+      phone: '9876543210',
+      email: 'resident@dwellora.com',
+      residentType: 'OWNER',
+      moveInDate: new Date('2023-01-01'),
+      emergencyContactName: 'Family Support',
+      emergencyContactPhone: '9876543211',
+      isVerified: true,
+      status: 'ACTIVE',
+    },
+    create: {
+      id: 'res-demo-resident',
+      societyId: socGVS.id,
+      userId: userDemoResident.id,
+      flatId: flatB1204.id,
+      name: 'Sarvesh Kulkarni',
+      phone: '9876543210',
+      email: 'resident@dwellora.com',
+      residentType: 'OWNER',
+      moveInDate: new Date('2023-01-01'),
+      emergencyContactName: 'Family Support',
+      emergencyContactPhone: '9876543211',
       isVerified: true,
       status: 'ACTIVE',
     },

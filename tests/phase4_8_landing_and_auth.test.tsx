@@ -303,4 +303,55 @@ describe('Phase 4.8 — Landing Page, Email Invitations & Complete Authenticatio
       expect(history[0].html).toContain('https://dwellora.app/reset-password?token=sample-reset-token');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // 8. Canonical Demo Accounts & Multi-Portal Testing Verification
+  // -------------------------------------------------------------------------
+  describe('8. Demo Accounts & One-Tap Testing Credentials', () => {
+    it('provides exactly 7 canonical demo accounts covering every community portal', () => {
+      const { DEMO_ACCOUNTS } = require('../src/mockData/auth/demoAccounts');
+      expect(DEMO_ACCOUNTS.length).toBe(7);
+      const roles = DEMO_ACCOUNTS.map((a: any) => a.role);
+      expect(roles).toEqual([
+        'resident',
+        'secretary',
+        'guard',
+        'committee',
+        'facility_manager',
+        'vendor',
+        'admin',
+      ]);
+    });
+
+    it('uses the standard universal password dwellora@2026 across all demo accounts', () => {
+      const { DEMO_ACCOUNTS, DEMO_PASSWORD } = require('../src/mockData/auth/demoAccounts');
+      expect(DEMO_PASSWORD).toBe('dwellora@2026');
+      DEMO_ACCOUNTS.forEach((account: any) => {
+        expect(account.password).toBe('dwellora@2026');
+        expect(account.primaryEmail).toContain('@dwellora.com');
+      });
+    });
+
+    it('correctly resolves accounts and aliases with findDemoAccount', () => {
+      const { findDemoAccount } = require('../src/mockData/auth/demoAccounts');
+      // Primary lookup
+      const resPrimary = findDemoAccount('resident@dwellora.com', 'dwellora@2026');
+      expect(resPrimary).not.toBeNull();
+      expect(resPrimary?.role).toBe('resident');
+
+      // Alias lookup
+      const resAlias = findDemoAccount('sarvesh@greenvalley.com', 'dwellora@2026');
+      expect(resAlias).not.toBeNull();
+      expect(resAlias?.role).toBe('resident');
+
+      // Reject invalid password
+      const rejected = findDemoAccount('resident@dwellora.com', 'wrongpassword');
+      expect(rejected).toBeNull();
+    });
+
+    it('renders the interactive demo accounts drawer button in LoginScreen', () => {
+      const html = renderToStaticMarkup(<LoginScreen />);
+      expect(html).toContain('Demo Role Accounts (Tap to test)');
+    });
+  });
 });
