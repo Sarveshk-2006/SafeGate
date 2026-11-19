@@ -1,7 +1,7 @@
 # 🌐 Live Production Application
 > **🚀 Official Live Deployment:** **[https://safegate-chi.vercel.app](https://safegate-chi.vercel.app)**  
 > **🔒 Public Portal Route:** `https://safegate-chi.vercel.app/login`  
-> **📱 Android Native APK:** `android/app/build/outputs/apk/debug/app-debug.apk`  
+> **📱 Android Native APK:** `android/app/build/outputs/apk/debug/Dwellora.apk` (or `Dwellora-debug.apk`)  
 
 ---
 
