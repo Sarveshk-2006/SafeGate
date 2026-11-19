@@ -256,8 +256,8 @@ export const SecurityTerminalPage: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
           <button
             type="button"
-            onClick={() => navigate(-1)}
-            aria-label="Go Back"
+            onClick={() => navigate('/security')}
+            aria-label="Go Back to Security Home"
             style={{
               width: 36,
               height: 36,

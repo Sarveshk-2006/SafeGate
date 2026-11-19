@@ -182,3 +182,4 @@ export class PasswordResetService {
 }
 
 export const passwordResetService = PasswordResetService.getInstance();
+

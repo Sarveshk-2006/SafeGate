@@ -123,3 +123,4 @@ stateDiagram-v2
 | **Replay Attack** | Resident attempts to reuse accepted token | Returns 400 Bad Request ("Invitation has already been used") | **PASSED** |
 | **Expired Token** | Resident uses link after 7 days | Returns 410 Gone ("Invitation token has expired") | **PASSED** |
 | **Revoked Token** | Secretary revokes; resident visits link | Returns 400 Bad Request ("Invitation has been revoked") | **PASSED** |
+

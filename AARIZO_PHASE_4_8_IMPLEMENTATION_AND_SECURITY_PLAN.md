@@ -102,3 +102,4 @@ Phase 4.8 will be deemed complete and production ready upon satisfying:
 3. **Login:** Activated residents can log in with email/password; demo role cards and mock shortcuts are eliminated from the production login view.
 4. **Password Reset:** Secure reset token request, email delivery, and password update.
 5. **Quality Gate:** `npm test` passes (all existing + new tests), `npx tsc -b` succeeds with 0 errors, and `npm run build` generates production bundle in under 2 seconds.
+

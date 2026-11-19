@@ -487,3 +487,4 @@ export class InvitationService {
 }
 
 export const invitationService = InvitationService.getInstance();
+

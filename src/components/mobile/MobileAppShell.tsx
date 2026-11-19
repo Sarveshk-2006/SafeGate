@@ -113,9 +113,12 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
     };
   }, [drawerOpen]);
 
-  // Primary navigation items (first 4 items surrounding center FAB)
-  const navLeft = bottomItems.slice(0, 2);
-  const navRight = bottomItems.slice(2, 4);
+  // Navigation layout logic:
+  // If showFab is false: render all bottomItems cleanly across the bottom bar
+  // If showFab is true: split into navLeft (first 2) and navRight (remaining items) around the center FAB
+  const hasFab = showFab && !location.pathname.endsWith('/reports') && !location.pathname.endsWith('/profile');
+  const navLeft = hasFab ? bottomItems.slice(0, 2) : [];
+  const navRight = hasFab ? bottomItems.slice(2) : [];
 
   return (
     <div
@@ -450,102 +453,133 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
           display: isKeyboardVisible ? 'none' : 'flex',
         }}
       >
-        {/* First 2 items on left */}
-        {navLeft.map((item) => {
-          const Icon = item.icon;
-          const active = isActive(item.path);
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              onClick={() => triggerHaptic('light')}
-              aria-label={item.label}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '2px',
-                padding: '0.25rem 0.5rem',
-                fontSize: '0.6875rem',
-                fontWeight: active ? 700 : 500,
-                textDecoration: 'none',
-                minWidth: 54,
-                flex: 1,
-                color: active ? 'var(--aarizo-blue, #176B91)' : 'var(--aarizo-text-muted, #8B9AA5)',
-              }}
-            >
-              <Icon size={20} strokeWidth={active ? 2.25 : 1.75} />
-              <span style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
-                {item.label}
-              </span>
-            </Link>
-          );
-        })}
+        {!hasFab ? (
+          bottomItems.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(item.path);
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => triggerHaptic('light')}
+                aria-label={item.label}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '2px',
+                  padding: '0.25rem 0.25rem',
+                  fontSize: '0.6875rem',
+                  fontWeight: active ? 700 : 500,
+                  textDecoration: 'none',
+                  minWidth: 46,
+                  flex: 1,
+                  color: active ? 'var(--aarizo-blue, #176B91)' : 'var(--aarizo-text-muted, #8B9AA5)',
+                }}
+              >
+                <Icon size={20} strokeWidth={active ? 2.25 : 1.75} />
+                <span style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                  {item.label}
+                </span>
+              </Link>
+            );
+          })
+        ) : (
+          <>
+            {navLeft.map((item) => {
+              const Icon = item.icon;
+              const active = isActive(item.path);
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => triggerHaptic('light')}
+                  aria-label={item.label}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '2px',
+                    padding: '0.25rem 0.5rem',
+                    fontSize: '0.6875rem',
+                    fontWeight: active ? 700 : 500,
+                    textDecoration: 'none',
+                    minWidth: 54,
+                    flex: 1,
+                    color: active ? 'var(--aarizo-blue, #176B91)' : 'var(--aarizo-text-muted, #8B9AA5)',
+                  }}
+                >
+                  <Icon size={20} strokeWidth={active ? 2.25 : 1.75} />
+                  <span style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                    {item.label}
+                  </span>
+                </Link>
+              );
+            })}
 
-        {/* Center Floating Action Button (FAB) */}
-        {showFab && !location.pathname.endsWith('/reports') && !location.pathname.endsWith('/profile') && (
-          <div style={{ position: 'relative', width: 56, display: 'flex', justifyContent: 'center' }}>
-            <button
-              onClick={() => {
-                triggerHaptic('medium');
-                if (onFabClick) {
-                  onFabClick();
-                } else {
-                  setIsQuickActionOpen(true);
-                }
-              }}
-              aria-label="Quick Action Launcher"
-              style={{
-                width: 48,
-                height: 48,
-                borderRadius: '50%',
-                background: 'var(--aarizo-navy, #083B56)',
-                color: '#ffffff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 6px 16px rgba(8, 59, 86, 0.28)',
-                border: '3px solid #ffffff',
-                cursor: 'pointer',
-                transform: 'translateY(-14px)',
-              }}
-            >
-              <Plus size={22} strokeWidth={2.5} />
-            </button>
-          </div>
+            {/* Center Floating Action Button (FAB) */}
+            <div style={{ position: 'relative', width: 56, display: 'flex', justifyContent: 'center' }}>
+              <button
+                onClick={() => {
+                  triggerHaptic('medium');
+                  if (onFabClick) {
+                    onFabClick();
+                  } else {
+                    setIsQuickActionOpen(true);
+                  }
+                }}
+                aria-label="Quick Action Launcher"
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: '50%',
+                  background: 'var(--aarizo-navy, #083B56)',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 6px 16px rgba(8, 59, 86, 0.28)',
+                  border: '3px solid #ffffff',
+                  cursor: 'pointer',
+                  transform: 'translateY(-14px)',
+                }}
+              >
+                <Plus size={22} strokeWidth={2.5} />
+              </button>
+            </div>
+
+            {navRight.map((item) => {
+              const Icon = item.icon;
+              const active = isActive(item.path);
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => triggerHaptic('light')}
+                  aria-label={item.label}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '2px',
+                    padding: '0.25rem 0.5rem',
+                    fontSize: '0.6875rem',
+                    fontWeight: active ? 700 : 500,
+                    textDecoration: 'none',
+                    minWidth: 54,
+                    flex: 1,
+                    color: active ? 'var(--aarizo-blue, #176B91)' : 'var(--aarizo-text-muted, #8B9AA5)',
+                  }}
+                >
+                  <Icon size={20} strokeWidth={active ? 2.25 : 1.75} />
+                  <span style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                    {item.label}
+                  </span>
+                </Link>
+              );
+            })}
+          </>
         )}
-
-        {/* Next 2 items on right */}
-        {navRight.map((item) => {
-          const Icon = item.icon;
-          const active = isActive(item.path);
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              onClick={() => triggerHaptic('light')}
-              aria-label={item.label}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '2px',
-                padding: '0.25rem 0.5rem',
-                fontSize: '0.6875rem',
-                fontWeight: active ? 700 : 500,
-                textDecoration: 'none',
-                minWidth: 54,
-                flex: 1,
-                color: active ? 'var(--aarizo-blue, #176B91)' : 'var(--aarizo-text-muted, #8B9AA5)',
-              }}
-            >
-              <Icon size={20} strokeWidth={active ? 2.25 : 1.75} />
-              <span style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
-                {item.label}
-              </span>
-            </Link>
-          );
-        })}
       </nav>
 
       {/* Quick Action Sheet Modal */}

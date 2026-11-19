@@ -126,3 +126,4 @@ The repository history was examined to identify the original landing page illust
 4. **Router Unification:**
    - Set `/` to display the Landing Page for unauthenticated users, or restore the portal for authenticated users.
    - Retain `/onboarding` as an explicit route for backwards compatibility.
+

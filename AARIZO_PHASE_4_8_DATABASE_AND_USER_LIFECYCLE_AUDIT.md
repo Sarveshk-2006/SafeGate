@@ -191,3 +191,4 @@ model PasswordResetToken {
 1. **Non-Destructive Guarantee**: No existing tables, columns, indexes, or records are modified or dropped.
 2. **Backward Compatibility**: Existing seeded users (e.g., demo secretaries, guards) continue functioning without interruption.
 3. **Execution Safety**: Wrapped in `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` blocks.
+

@@ -201,6 +201,14 @@ export const SecurityHomePage: React.FC = () => {
           subtitle="Fast Gate Terminals"
           items={[
             {
+              id: 'walkin',
+              label: 'Walk-in Entry',
+              icon: HardHat,
+              color: '#059669',
+              bg: '#ECFDF5',
+              onClick: () => navigate('/security/terminal'),
+            },
+            {
               id: 'scanner',
               label: 'Visitor Scan',
               icon: Scan,

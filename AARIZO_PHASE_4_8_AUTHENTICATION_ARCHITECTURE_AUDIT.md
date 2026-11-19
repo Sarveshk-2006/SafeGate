@@ -128,3 +128,4 @@ export const TARGET_SCRYPT_CONFIG = {
 2. **Error Neutralization:** Ensure generic error messages (`Invalid email or password`) to prevent account enumeration (CWE-204).
 3. **Password Recovery Entry Point:** Add "Forgot Password?" link on login page navigating to `/forgot-password`.
 4. **Account Activation Entry Point:** Add "Have an invite code? Activate Account" link navigating to `/activate`.
+

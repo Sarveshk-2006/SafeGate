@@ -135,3 +135,4 @@ In `ResidentManagementPage.tsx`, residents will display real-time invitation bad
    - `GET /api/auth/invitation/verify`
    - `POST /api/auth/invitation/accept`
 4. **Admin UI Updates (`ResidentManagementPage.tsx`):** Add invitation status column and action dropdown.
+

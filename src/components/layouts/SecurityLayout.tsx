@@ -1,6 +1,7 @@
-import { Outlet, Link, useNavigate } from 'react-router-dom';
+import { Outlet, Link } from 'react-router-dom';
 import { MobileAppShell } from '../mobile/MobileAppShell';
 import {
+  LayoutDashboard,
   QrCode,
   Scan,
   ShieldAlert,
@@ -14,34 +15,35 @@ import {
 } from 'lucide-react';
 
 const DRAWER_NAV = [
-  { label: 'Gate Terminal', path: '/security', icon: QrCode },
-  { label: 'Visitor Scanner', path: '/security/verify', icon: Scan },
+  { label: 'Security Home', path: '/security', icon: LayoutDashboard },
+  { label: 'Gate Terminal', path: '/security/terminal', icon: QrCode },
+  { label: 'Visitor & Pass Scanner', path: '/security/verify', icon: Scan },
   { label: 'Child Gate Scanner', path: '/security/child-safety', icon: ShieldAlert },
-  { label: 'Staff Hub', path: '/security/staff-scanner', icon: HardHat },
-  { label: 'Parking Console', path: '/security/parking', icon: Car },
+  { label: 'Staff & Worker Terminal', path: '/security/staff-scanner', icon: HardHat },
+  { label: 'Parking Boom Barrier', path: '/security/parking', icon: Car },
   { label: 'Parcel Intelligence', path: '/security/delivery-intelligence', icon: Package },
   { label: 'Emergency Command', path: '/security/emergency-command', icon: ShieldAlert },
-  { label: 'Guest Stays', path: '/security/guest-stay', icon: BedDouble },
-  { label: 'Privacy & Audit', path: '/security/privacy-hub', icon: ShieldCheck },
-  { label: 'Guard Profile', path: '/security/profile', icon: User },
+  { label: 'Guest Stays Scanner', path: '/security/guest-stay', icon: BedDouble },
+  { label: 'Privacy & Gate Audit', path: '/security/privacy-hub', icon: ShieldCheck },
+  { label: 'Officer Profile', path: '/security/profile', icon: User },
 ];
 
 const BOTTOM_NAV = [
-  { label: 'Gate', path: '/security', icon: QrCode },
+  { label: 'Home', path: '/security', icon: LayoutDashboard },
+  { label: 'Gate', path: '/security/terminal', icon: QrCode },
   { label: 'Scan', path: '/security/verify', icon: Scan },
   { label: 'Emergency', path: '/security/emergency-command', icon: ShieldAlert },
   { label: 'Profile', path: '/security/profile', icon: User },
 ];
 
 export const SecurityLayout = () => {
-  const navigate = useNavigate();
   return (
     <MobileAppShell
       roleTitle="Security Guard"
       societyName="Green Valley Society"
       drawerItems={DRAWER_NAV}
       bottomItems={BOTTOM_NAV}
-      onFabClick={() => navigate('/security/verify')}
+      showFab={false}
       topRightActions={
         <Link
           to="/security/emergency-command"

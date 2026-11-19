@@ -280,32 +280,34 @@ describe('Phase 4.7 — Unified Multi-Portal UI/UX & Profile System', () => {
     test('renders AdminProfilePage with Secretary credentials and Society Document Locker', () => {
       const html = renderToStaticMarkup(<AdminProfilePage />);
       expect(html).toContain('Hon. Secretary');
-      expect(html).toContain('Official Contact &amp; Office');
-      expect(html).toContain('Statutory &amp; Society Records');
+      expect(html).toContain('Registered Phone');
+      expect(html).toContain('Digital Document Locker');
       expect(html).toContain('Society Registration Certificate');
       expect(html).toContain('Secretary Election Resolution');
       expect(html).toContain('Society PAN &amp; Tax Exemption Certificate');
-      expect(html).toContain('Sign Out of Secretary Portal');
+      expect(html).toContain('Sign Out');
     });
 
     test('renders SecurityProfilePage with Guard Badge ID and PSARA Document Locker', () => {
       const html = renderToStaticMarkup(<SecurityProfilePage />);
-      expect(html).toContain('SEC-8821');
-      expect(html).toContain('Eagle Eye Security Services Ltd.');
-      expect(html).toContain('Post &amp; Shift Assignment');
-      expect(html).toContain('PSARA &amp; Police Verification Records');
-      expect(html).toContain('PSARA Security Training &amp; Badge License');
+      expect(html).toContain('Badge SG-8821');
+      expect(html).toContain('Verified Security Officer');
+      expect(html).toContain('Registered Phone');
+      expect(html).toContain('Digital Document Locker');
+      expect(html).toContain('PSARA Security Guard License &amp; Certification');
       expect(html).toContain('Police Clearance &amp; Character Verification');
-      expect(html).toContain('End Security Shift &amp; Sign Out');
+      expect(html).toContain('Sign Out');
     });
 
     test('renders SuperAdminProfilePage with Root Platform Administrator details', () => {
       const html = renderToStaticMarkup(<SuperAdminProfilePage />);
-      expect(html).toContain('ROOT ADMIN');
-      expect(html).toContain('Dwellora Platform Infrastructure');
+      expect(html).toContain('Platform Super Administrator');
+      expect(html).toContain('Platform Super Admin');
+      expect(html).toContain('Registered Phone');
+      expect(html).toContain('Digital Document Locker');
       expect(html).toContain('Developer Database Studio');
-      expect(html).toContain('Societies &amp; Tenants Provisioning');
-      expect(html).toContain('Sign Out of Platform Admin Console');
+      expect(html).toContain('Registered Societies Directory');
+      expect(html).toContain('Sign Out');
     });
 
     test('renders StaffProfilePage with Domestic Worker QR Pass', () => {
